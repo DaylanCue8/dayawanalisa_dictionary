@@ -7,7 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'tagalog_to_baybayin_local_translator.dart';
 
 class ApiService {
-  static const String _baseUrl = 'http://192.168.1.186:5000';
+  static const String _baseUrl = 'http://192.168.254.119:5000';
 
   final TagalogToBaybayinLocalTranslator _localTagalogTranslator = TagalogToBaybayinLocalTranslator();
 

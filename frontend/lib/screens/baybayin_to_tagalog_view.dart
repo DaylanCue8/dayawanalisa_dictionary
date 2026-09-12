@@ -437,12 +437,12 @@ class _DetectionBoxPainter extends CustomPainter {
       canvas.drawRect(rect, boxPaint);
 
       if (showLabels) {
+        // Label shows the character only now - confidence percentage
+        // removed per request (was previously "$char ${confidence}%").
         final char = d['char']?.toString() ?? '';
-        final confidence = (d['confidence'] as num?)?.toDouble() ?? 0;
-        final label = '$char ${confidence.toStringAsFixed(0)}%';
         final textPainter = TextPainter(
           text: TextSpan(
-            text: label,
+            text: char,
             style: const TextStyle(
               color: Colors.white,
               fontSize: 11,

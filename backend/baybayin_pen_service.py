@@ -370,7 +370,7 @@ def merge_stray_diacritic_boxes(boxes,
                 bigger_height = bigger_box[3] - bigger_box[1]
                 gap_limit = min(bigger_height * max_vertical_gap_multiplier, absolute_gap_cap)
                 gap = _boxes_vertical_gap(box_i, box_j)
-                if gap > gap_limit:
+                if gap > gap_limit: 
                     continue
 
                 merged_box = (
