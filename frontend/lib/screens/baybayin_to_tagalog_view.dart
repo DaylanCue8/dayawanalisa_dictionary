@@ -5,10 +5,10 @@ import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 import '../services/api_service.dart';
 import '../widgets/image_cropper_widget.dart';
-import '../widgets/evaluation_modal.dart';
 import '../screens/camera_capture_screen.dart';
+import '../screens/baybayin_result_screen.dart';
 
-/// Handles the "Baybayin to Tagalog" mode: capture/upload a photo, crop it,
+/// Handles the "Baybayin to Latin" mode: capture/upload a photo, crop it,
 /// send it for translation, and show the result. Fully self-contained —
 /// owns its own state, independent of the text-translation mode.
 class BaybayinToTagalogView extends StatefulWidget {
@@ -99,7 +99,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
         String status = response['status']?.toString().toLowerCase() ?? '';
         if (status == 'success' || status == 'low_confidence') {
           Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) _showEvaluation(response);
+            if (mounted) _showResults(imageBytes, response);
           });
         } else if (status == 'no_characters' || _translatedResult.isEmpty) {
           _translatedResult = 'No Baybayin letters found. Try a clearer crop.';
@@ -169,16 +169,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     await _handleRawImage(captured);
   }
 
-  void _showEvaluation(Map<String, dynamic> data) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => EvaluationModal(
-        detections: data['individual_detections'] ?? [],
-        averageConfidence: (data['confidence'] as num).toDouble(),
-        translatedText: data['translated_text'] ?? "",
-        sessionId: data['session_id'] ?? 0,
+  void _showResults(Uint8List sourceImage, Map<String, dynamic> data) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => BaybayinResultScreen(
+          sourceImage: sourceImage,
+          translatedText: data['translated_text']?.toString() ?? '',
+          detections: (data['individual_detections'] as List? ?? [])
+              .whereType<Map>()
+              .map((d) => Map<String, dynamic>.from(d))
+              .toList(),
+        ),
       ),
     );
   }

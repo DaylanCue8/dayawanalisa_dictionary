@@ -17,10 +17,10 @@ class DayawLandingScreen extends StatefulWidget {
 }
 
 class _DayawLandingScreenState extends State<DayawLandingScreen> {
-  String selectedMode = 'Baybayin to Tagalog';
+  String selectedMode = 'Baybayin to Latin';
 
   final List<String> translationModes = [
-    'Baybayin to Tagalog',
+    'Baybayin to Latin',
     'Tagalog to Baybayin',
   ];
 
