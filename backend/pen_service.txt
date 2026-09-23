@@ -20,40 +20,6 @@ def decode_grayscale_exif_corrected(image_bytes):
     return np.array(pil_img)
 
 
-# ---- BLUR DETECTION ----
-# Runs on the RAW decoded image, BEFORE enhance_image_quality's unsharp-
-# mask sharpening step - sharpening would artificially inflate the
-# Laplacian variance and defeat this check, since it's designed to
-# exaggerate edges regardless of whether the underlying photo was
-# actually in focus.
-BLUR_RESIZE_WIDTH = 800
-# STARTING ESTIMATE - not yet calibrated. Take several genuinely sharp
-# and several genuinely blurry photos with your test devices, run
-# compute_blur_score on each with debug=True, and set this threshold
-# from the real gap between those two groups' scores.
-BLUR_VARIANCE_THRESHOLD = 60.0
-
-BLURRY_IMAGE_MESSAGE = (
-    'Image too blurry to process. Please hold the phone steady, '
-    'ensure good lighting, and retake the photo.'
-)
-
-
-def compute_blur_score(gray_img, resize_width=BLUR_RESIZE_WIDTH):
-    """
-    Higher score = sharper. Resizing to a fixed width first keeps the
-    score comparable across different camera resolutions - a raw
-    Laplacian variance scales somewhat with image size, so without this
-    a high-res sharp photo and a low-res blurry one could accidentally
-    land near the same number.
-    """
-    height, width = gray_img.shape[:2]
-    if width > resize_width:
-        scale = resize_width / float(width)
-        gray_img = cv2.resize(gray_img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    return float(cv2.Laplacian(gray_img, cv2.CV_64F).var())
-
-
 # ---- PEN ONLY: quality enhancement for weak/inconsistent phone cameras ----
 MIN_LONG_SIDE_PX = 1000
 
@@ -105,6 +71,19 @@ def _estimate_stroke_thickness(binary_img):
 
 
 # ---- PEN: automatic deskew (runs BEFORE line-band detection) ----
+# A tilted photo or naturally slanted handwriting rotates the whole
+# page relative to the image's x/y axes. Every line-separation method
+# below (blank-row, density, run-count) assumes lines are roughly
+# horizontal bands of the array - a rotated page turns "line 1" and
+# "line 2" into diagonal bands that no horizontal row-projection can
+# cleanly separate, however good the per-row metric is. Rather than
+# relying on the camera being held perfectly level (which wouldn't
+# help anyway if the handwriting itself slants), the page is
+# auto-leveled here with the classic projection-profile method: try a
+# range of small rotation angles and pick whichever one makes the
+# row-wise ink profile most "peaky" - tall where a line's ink sits,
+# empty in the gaps between lines. That peakiness is maximized exactly
+# when every line is horizontal, regardless of why it wasn't before.
 DESKEW_ANGLE_RANGE_DEGREES = 15.0
 DESKEW_ANGLE_STEP_DEGREES = 0.5
 
@@ -138,6 +117,16 @@ def _invert_point(rotation_matrix_inv, x, y):
 
 
 def map_box_to_original(rotation_matrix_inv, x0, y0, x1, y1):
+    """
+    Bounding boxes computed on the deskewed (rotated) binary image need
+    to be mapped back onto the ORIGINAL photo's coordinates before
+    being returned to the app, since that's the image the app actually
+    draws the green overlay boxes on top of. Each corner of the
+    axis-aligned box is inverse-rotated individually and a new
+    axis-aligned box is taken around the four mapped corners, since a
+    rotated rectangle's corners no longer form an axis-aligned box in
+    the original frame.
+    """
     corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]
     mapped = [_invert_point(rotation_matrix_inv, x, y) for x, y in corners]
     xs = [p[0] for p in mapped]
@@ -146,6 +135,20 @@ def map_box_to_original(rotation_matrix_inv, x0, y0, x1, y1):
 
 
 # ---- PEN: line-band isolation (runs BEFORE any segmentation) ----
+# Everything below this used to run once on the whole page: the
+# segment-merge kernel could dilate tall enough (up to 70px) to bridge
+# ink across two close-together lines into one contour, and
+# merge_stray_diacritic_boxes folded boxes together globally with no
+# idea "nearby vertically" might mean "the next line down." Once one
+# oversized cross-line box existed, group_boxes_into_lines computed its
+# row-grouping threshold from that box's inflated height and started
+# absorbing real second-line boxes into "line 1" - producing exactly
+# the interleaved/scrambled bounding boxes and text seen with 2+ lines.
+#
+# Fix: split the page into line bands FIRST using the row-wise ink
+# projection, then run segmentation/merging/classification
+# independently per band. No kernel or merge heuristic can bridge two
+# lines if they're never in the same array together.
 LINE_BAND_SMOOTH_FRAC = 0.02
 LINE_BAND_RUN_FRAC = 0.3
 LINE_BAND_MERGE_GAP_FRAC = 0.6
@@ -158,6 +161,16 @@ def _row_letter_counts(binary_img):
     For each row, counts how many SEPARATE horizontal ink segments it
     passes through - i.e. how many distinct letters/strokes intersect
     that row, not how many ink pixels it has.
+
+    This is what makes line-band detection immune to a single glyph
+    with a long or thick vertical stroke bridging two handwritten
+    lines: no matter how much ink that one glyph contributes, it is
+    always exactly ONE segment in every row it touches. A row that's
+    genuinely inside a text line, by contrast, typically crosses many
+    separate letters at once. A pixel-density profile can be flooded
+    by one heavy bridging stroke; a segment-count profile cannot,
+    since one glyph can never look like "many letters" regardless of
+    its size.
     """
     has_ink = binary_img > 0
     padded = np.pad(has_ink, ((0, 0), (1, 1)), mode='constant', constant_values=False)
@@ -172,6 +185,19 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
                      expand_frac=LINE_BAND_EXPAND_FRAC):
     """
     Returns a list of (y0, y1) bands, one per detected text line.
+
+    Earlier versions of this function thresholded on "any ink in this
+    row" (defeated by a thin stray pixel bridging two lines) and then
+    on total ink DENSITY per row (defeated by one glyph with a long or
+    thick vertical stroke, which keeps the row's pixel sum elevated
+    for every row it passes through, flooding the valley a density
+    threshold needs to find). This version thresholds on the number of
+    separate ink RUNS per row instead (see _row_letter_counts): a
+    single bridging glyph is always one run, so it can never masquerade
+    as "a row full of text" here, however tall or thick it is.
+
+    Smoothing suppresses single-row noise; rows are kept as "core text"
+    only if their run count exceeds a fraction of the profile's peak.
     """
     row_profile = _row_letter_counts(binary_img).astype(np.float64)
     if row_profile.max() <= 0:
@@ -209,35 +235,6 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
         else:
             merged.append([start, end])
 
-    # A fixed expand_frac (a single fraction of the MEDIAN line height,
-    # applied identically to every line) can truncate a diacritic mark
-    # that happens to sit further from its base than that fraction
-    # reaches - e.g. an X mark drawn further below its base than usual
-    # in messier handwriting. The slice below in preprocess_and_predict
-    # (line_bin = binary[band_y0:band_y1, :]) discards everything
-    # outside the band entirely - so a boundary that cuts through ink
-    # means that ink is PERMANENTLY gone before segmentation ever runs,
-    # not just mis-assigned to the wrong line.
-    #
-    # Fix: after computing the expand-based candidate boundary, snap it
-    # OUTWARD to the nearest row with ZERO ink at all. A genuinely
-    # blank row is the only thing guaranteed not to be cutting through
-    # real ink, so this can't truncate a mark regardless of how far it
-    # hangs from its base - it only stops widening once it finds empty
-    # space, or reaches the midpoint boundary shared with the
-    # neighboring line (which a band must never cross, since that's
-    # exactly the cross-line bridging this whole line-isolation
-    # approach exists to prevent).
-    has_ink_per_row = (binary_img > 0).any(axis=1)
-
-    def _snap_to_blank_row(candidate_idx, direction, limit):
-        idx = candidate_idx
-        while (idx > limit) if direction == -1 else (idx < limit):
-            if not has_ink_per_row[idx]:
-                return idx
-            idx += direction
-        return limit
-
     expand = max(min_gap_px, int(round(median_height * expand_frac)))
     bands = []
     for idx, (start, end) in enumerate(merged):
@@ -245,66 +242,32 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
         midpoint_next = (
             (end + merged[idx + 1][0]) // 2 if idx + 1 < len(merged) else height
         )
-        band_y0_candidate = max(midpoint_prev, start - expand)
-        band_y1_candidate = min(midpoint_next, end + expand)
-        band_y0 = _snap_to_blank_row(band_y0_candidate, -1, midpoint_prev)
-        band_y1 = _snap_to_blank_row(band_y1_candidate, 1, midpoint_next)
+        band_y0 = max(midpoint_prev, start - expand)
+        band_y1 = min(midpoint_next, end + expand)
         bands.append((band_y0, band_y1))
     return bands
 
 
-def otsu_1d_threshold(gaps):
-    """
-    Finds the optimal threshold separating small letter gaps from large word gaps
-    using Otsu's method on 1D gap values.
-    """
-    if len(gaps) < 2:
-        return 10.0
-
-    gaps = np.array(gaps)
-    min_g, max_g = gaps.min(), gaps.max()
-
-    # If all gaps are virtually identical, there are no word spaces
-    if max_g - min_g < 5:
-        return max_g + 1.0
-
-    # Try 50 candidate thresholds between min and max gap
-    thresholds = np.linspace(min_g, max_g, 50)
-    best_thresh = thresholds[0]
-    best_variance = -1
-
-    for t in thresholds:
-        bg = gaps[gaps <= t]  # Letter gaps
-        fg = gaps[gaps > t]   # Word gaps
-
-        if len(bg) == 0 or len(fg) == 0:
-            continue
-
-        w0 = len(bg) / len(gaps)
-        w1 = len(fg) / len(gaps)
-
-        # Inter-class variance
-        var_between = w0 * w1 * ((bg.mean() - fg.mean()) ** 2)
-
-        if var_between > best_variance:
-            best_variance = var_between
-            best_thresh = t
-
-    return best_thresh
-
 def group_line_boxes_into_words(boxes):
     if not boxes:
         return []
-
     row = sorted(boxes, key=lambda box: box[0])
     if len(row) == 1:
         return [row]
 
-    # Calculate horizontal gaps (x_min_next - x_max_current)
     gaps = [row[i][0] - row[i - 1][2] for i in range(1, len(row))]
 
-    # Find mathematical cutoff between small gaps and large gaps
-    word_gap = otsu_1d_threshold(gaps)
+    # Find the biggest jump between consecutive gap sizes (sorted).
+    # Everything below that jump is "letter spacing"; everything at or
+    # above it is "word spacing" - no fixed multiplier needed, this
+    # adapts to whatever this specific line's actual handwriting does.
+    sorted_gaps = sorted(gaps)
+    if len(sorted_gaps) > 1:
+        jumps = [sorted_gaps[i + 1] - sorted_gaps[i] for i in range(len(sorted_gaps) - 1)]
+        biggest_jump_idx = jumps.index(max(jumps))
+        word_gap = (sorted_gaps[biggest_jump_idx] + sorted_gaps[biggest_jump_idx + 1]) / 2.0
+    else:
+        word_gap = max(10.0, sorted_gaps[0] * 2.0) if sorted_gaps else 10.0
 
     words = []
     current_word = [row[0]]
@@ -316,7 +279,6 @@ def group_line_boxes_into_words(boxes):
         else:
             current_word.append(row[i])
     words.append(current_word)
-
     return words
 
 
@@ -453,6 +415,12 @@ def split_into_single_glyphs(crop_bin):
         h, w = crop_bin.shape[:2]
         return [((0, 0, w, h), crop_bin)], kernel_size
 
+    # GUARD: don't split apart a base+diacritic pair. This clustering
+    # pass only measures gap distance - it has no concept of "one big
+    # letter + its own tiny mark" vs "two separate letters", so a mark
+    # sitting just outside this kernel's reach gets split into its own
+    # piece and classified independently, producing a bogus standalone
+    # letter reading for what's really just a dot/cross.
     areas = [(x1 - x0) * (y1 - y0) for (x0, y0, x1, y1) in clusters]
     largest_area = max(areas)
     other_areas = sorted(areas, reverse=True)[1:]
@@ -514,6 +482,16 @@ def merge_stray_diacritic_boxes(boxes,
                                  max_vertical_gap_multiplier=DIACRITIC_MERGE_MAX_VERTICAL_GAP_MULTIPLIER,
                                  absolute_gap_cap_multiplier=DIACRITIC_MERGE_ABSOLUTE_GAP_CAP_MULTIPLIER,
                                  size_ratio_threshold=DIACRITIC_MERGE_SIZE_RATIO_THRESHOLD):
+    """
+    Folds a box that's much smaller than, horizontally overlapping, and
+    vertically close to another box into that larger box. The
+    size-ratio guard keeps this from ever merging two real letters of
+    similar size. This now always runs on boxes from a SINGLE line band
+    (see find_line_bands / preprocess_and_predict), so the old
+    "median-height cap keeps this from bleeding into an adjacent line"
+    concern no longer applies - there's no adjacent line in the array
+    to bleed into.
+    """
     if len(boxes) <= 1:
         return list(boxes)
 
@@ -568,6 +546,18 @@ def merge_stray_diacritic_boxes(boxes,
 
 
 def format_paragraph(lines):
+    """
+    Joins resolved line strings into the final paragraph.
+
+    str.capitalize() is deliberately NOT used on the whole paragraph:
+    it uppercases the first character but LOWERCASES everything after
+    it, which across a multi-line paragraph would silently flatten the
+    rest of the text. Here each line is normalized to lowercase (the
+    OCR labels carry no real case information anyway - a base class is
+    named 'BA', not 'ba') and only the paragraph's very first letter is
+    capitalized, since the lines are one continuous paragraph rather
+    than five separate sentences.
+    """
     normalized = [line.strip().lower() for line in lines]
     normalized = [line for line in normalized if line]
     if not normalized:
@@ -597,7 +587,7 @@ def _distance_transform_gap(labels, mask_label_ids, candidate_label_id):
 
 
 # ---- PEN: base/diacritic separation ----
-GAP_THICKNESS_MULTIPLIER = 1.0  # BREAK CODE NEED TO BE ADJUST
+GAP_THICKNESS_MULTIPLIER = 1.5
 MAX_GAP_THRESHOLD_PIXELS = 6.0
 MIN_PIXELS_FOR_SHAPE_ANALYSIS = 16
 SOLIDITY_THRESHOLD = 0.80
@@ -637,10 +627,27 @@ def separate_base_and_diacritic(labels, stats, num_labels):
     return base_idx_list, dia_idx, gap_threshold
 
 
+# ---- PEN: consonant-level ambiguity (one glyph, two Latin readings) ----
+# Baybayin uses a SINGLE glyph for both D and R - the trained model
+# only has a 'DA' class, but the correct Latin letter depends on the
+# word (e.g. "dagat" vs "araw"). This is handled exactly like the
+# {e/i}/{o/u} vowel ambiguity: emit a '{d/r}' placeholder instead of a
+# bare 'd', and let resolve_output_parts's dictionary lookup (which
+# already treats any {x/y} slot generically) pick the reading that
+# forms a real word.
 AMBIGUOUS_CONSONANT_SLOTS = {'DA': '{d/r}'}
 
 
 def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes, debug=False):
+    """
+    Diacritics are Dot and Cross/X only. A dot above the base
+    represents E/I and a dot below represents O/U - Baybayin doesn't
+    distinguish these pairs by shape, so BOTH readings are emitted as
+    a '{e/i}'/'{o/u}' placeholder here; resolve_output_parts (in
+    baybayin_disambiguation.py) picks the correct one downstream, using
+    dictionary lookup against the whole assembled word. Cross/X cancels
+    the vowel entirely, leaving the bare consonant.
+    """
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(native_crop)
     predicted_base_name = 'Unknown'
     predicted_dia_name = 'None'
@@ -687,19 +694,8 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
         dia_mask_full = (labels == dia_idx).astype(np.uint8) * 255
         dia_crop = dia_mask_full[dy:dy + dh, dx:dx + dw]
+        dia_padded = crop_and_pad_to_square(dia_crop)
 
-        # NOTE: crop_and_pad_to_square() intentionally NOT applied here
-        # anymore. Training (load_and_preprocess in the training script)
-        # resizes diacritic crops straight to 56x56 with no aspect-ratio
-        # padding, so the dia_model was never trained on padded-square
-        # inputs. Feeding it a padded crop at inference time was a
-        # train/inference mismatch that skewed dia_confidence (though it
-        # did not change the final diacritic LABEL, since that label is
-        # decided below by shape heuristics, not by dia_prediction).
-        # Resizing dia_crop directly here matches what the model actually
-        # learned. If you want aspect-preserving square padding, add
-        # crop_and_pad_to_square() into the TRAINING pipeline too and
-        # retrain model_dia.pkl - don't patch it in on only one side.
         dia_upscaled = cv2.resize(dia_crop, (40, 40), interpolation=cv2.INTER_CUBIC)
         _, dia_upscaled = cv2.threshold(dia_upscaled, 127, 255, cv2.THRESH_BINARY)
 
@@ -716,7 +712,7 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
         else:
             solidity = 1.0
 
-        dia_norm = cv2.resize(dia_crop, (56, 56)).astype(np.float32) / 255.0
+        dia_norm = cv2.resize(dia_padded, (56, 56)).astype(np.float32) / 255.0
 
         hog_base = hog(
             base_norm, orientations=9, pixels_per_cell=(8, 8),
@@ -737,14 +733,16 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
         is_too_small_for_shape_analysis = (dw * dh) < MIN_PIXELS_FOR_SHAPE_ANALYSIS
 
-        # NOTE: the shape-heuristic override (small-area -> 'Dot',
-        # low-solidity -> 'X'/'Cross', else -> 'Dot') that used to sit
-        # here has been removed. predicted_dia_name now stays exactly
-        # what dia_model predicted above (svm_raw_dia_prediction).
-        # `solidity` and `is_too_small_for_shape_analysis` are still
-        # computed: solidity is kept for the debug print below (now
-        # informational only), and is_too_small_for_shape_analysis is
-        # still used by `prefer_for_fragment` further down.
+        if is_too_small_for_shape_analysis:
+            predicted_dia_name = 'Dot'
+        elif solidity < SOLIDITY_THRESHOLD:
+            available_classes = [str(value).lower() for value in dia_classes]
+            if 'x' in available_classes:
+                predicted_dia_name = 'X'
+            elif 'cross' in available_classes:
+                predicted_dia_name = 'Cross'
+        else:
+            predicted_dia_name = 'Dot'
 
         force_for_vowel = whole_base_name in ('A', 'EI', 'OU') and whole_confidence >= base_confidence
         prefer_for_fragment = whole_confidence >= base_confidence and is_too_small_for_shape_analysis
@@ -765,21 +763,31 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
         if debug:
             print(f"  [pen debug] dw={dw}, dh={dh}, area={dw * dh}, "
-                  f"solidity={solidity:.2f} (threshold={SOLIDITY_THRESHOLD}, informational only), "
+                  f"solidity={solidity:.2f} (threshold={SOLIDITY_THRESHOLD}), "
                   f"too_small={is_too_small_for_shape_analysis}, "
                   f"gap_threshold_used={gap_threshold_used:.2f}, "
-                  f"svm_dia_pred='{svm_raw_dia_prediction}' (now authoritative), "
+                  f"split_svm_pred='{svm_raw_dia_prediction}', "
                   f"whole_crop_pred='{whole_base_name}' ({whole_confidence:.2f}), "
                   f"position='{position}'")
 
     final_output_text = predicted_base_name
     if predicted_base_name == 'EI':
+        # Standalone E/I vowel letter (not a consonant+dot combo) - same
+        # ambiguity as the dot-above kudlit, just with no consonant to
+        # attach to. Without this, the literal string 'EI' would land
+        # in the output instead of resolving to 'e' or 'i'.
         final_output_text = '{e/i}'
     elif predicted_base_name == 'OU':
         final_output_text = '{o/u}'
     elif predicted_base_name != 'A':
         dia_clean = predicted_dia_name.lower()
         base_root = predicted_base_name[:-1]
+        # .strip().upper() so this matches regardless of the trained
+        # model's exact class-name casing/whitespace ('DA', 'Da', 'da',
+        # or padded) - a silent mismatch here means the {d/r} slot
+        # never gets created and the glyph is output as a bare 'd'
+        # with no ambiguity, bypassing the dictionary resolution
+        # entirely rather than getting it wrong.
         normalized_base_name = predicted_base_name.strip().upper()
         consonant_slot = AMBIGUOUS_CONSONANT_SLOTS.get(normalized_base_name, base_root)
         if 'cross' in dia_clean or 'x' in dia_clean:
@@ -789,6 +797,9 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
         elif position == 'Below' and 'dot' in dia_clean:
             final_output_text = consonant_slot + '{o/u}'
         elif normalized_base_name in AMBIGUOUS_CONSONANT_SLOTS:
+            # No diacritic detected, so the vowel is the glyph's
+            # default 'a' - but the consonant itself is still
+            # ambiguous and needs the same slot-based resolution.
             final_output_text = consonant_slot + predicted_base_name[-1]
 
     confidence = base_confidence
@@ -797,6 +808,19 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
     return predicted_base_name, predicted_dia_name, final_output_text, confidence
 
 
+# ---- PEN: write resolved spellings back onto individual detections ----
+# resolve_output_parts works at WORD level (it needs the whole word to
+# do a dictionary lookup), but each detection holds only its own
+# fragment - e.g. 'b{e/i}'. Without this, the paragraph text would say
+# 'bi' while the per-character detection list still said 'b{e/i}', so
+# bounding-box labels and archived crop filenames would disagree with
+# the translation the user actually sees.
+#
+# A detection's fragment can expand to more than one letter, so letters
+# can't be zipped 1:1 to detections. Instead each fragment's resolved
+# LENGTH is computed (a '{e/i}' slot always resolves to exactly one
+# letter) and that many characters are consumed from the resolved word
+# in order.
 _AMBIGUITY_SLOT_PATTERN = re.compile(r'\{[a-z]/[a-z]\}')
 
 
@@ -826,18 +850,6 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     if image is None:
         return 'Error', 0.0, [], {'width': 0, 'height': 0}
 
-    image_height_raw, image_width_raw = image.shape[:2]
-
-    # ---- BLUR CHECK: on the raw photo, before any enhancement ----
-    blur_score = compute_blur_score(image)
-    if debug:
-        print(f"  [pen debug] blur_score={blur_score:.2f} (threshold={BLUR_VARIANCE_THRESHOLD})")
-    if blur_score < BLUR_VARIANCE_THRESHOLD:
-        return (
-            BLURRY_IMAGE_MESSAGE, 0.0, [],
-            {'width': image_width_raw, 'height': image_height_raw},
-        )
-
     image = enhance_image_quality(image)
     image_height, image_width = image.shape[:2]
 
@@ -846,6 +858,14 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     normalized = cv2.divide(image, background, scale=255)
     binary = preprocess_image(normalized)
 
+    # ---- DESKEW ----
+    # Corrects camera tilt AND naturally slanted handwriting in one
+    # step, since both look the same to the line-separation logic
+    # below: a page that isn't level. binary is replaced with its
+    # rotated version for all downstream segmentation/classification;
+    # rotation_matrix_inv is kept so reported bounding boxes can be
+    # mapped back onto the original (unrotated) photo before returning
+    # to the app.
     skew_angle = estimate_skew_angle(binary)
     if debug:
         print(f"  [pen debug] estimated skew angle: {skew_angle:.2f} degrees")
@@ -857,6 +877,14 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         flags=cv2.INTER_NEAREST, borderValue=0,
     )
 
+    # ---- LINE ISOLATION ----
+    # Find line bands on the whole page's ink projection FIRST, then
+    # run segmentation/merging independently within each band. This is
+    # what actually fixes 2+ line inputs: previously segment_glyphs and
+    # merge_stray_diacritic_boxes both ran once on the full page and
+    # could bridge/merge boxes across lines, which then corrupted
+    # group_boxes_into_lines's row-grouping threshold and scrambled the
+    # bounding boxes/text you saw in the 2-line screenshot.
     line_bands = find_line_bands(binary)
     if debug:
         print(f"  [pen debug] line_bands_found={line_bands}")
@@ -884,6 +912,9 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         if not line_boxes:
             continue
 
+        # Shift back into whole-image coordinates now that this band's
+        # own segmentation is done, so downstream crops/bboxes are
+        # correct relative to the original image.
         line_boxes = [
             (x0, y0 + band_y0, x1, y1 + band_y0) for (x0, y0, x1, y1) in line_boxes
         ]
@@ -902,8 +933,11 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     os.makedirs(session_dir, exist_ok=True)
     results = []
     output_parts = []
-    noise_confidence_threshold = 0.30
+    noise_confidence_threshold = 0.20
 
+    # results indices, nested line -> word -> [indices], so the
+    # disambiguation write-back below can map each resolved word back
+    # onto exactly the detections that produced it.
     result_indices_per_line = []
 
     crop_index = 0
@@ -937,6 +971,10 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                     abs_x1 = tight_abs_x + lx1
                     abs_y1 = tight_abs_y + ly1
 
+                    # abs_x0..abs_y1 are in the DESKEWED image's
+                    # coordinate space; map back onto the original
+                    # (un-rotated) photo before reporting, since that's
+                    # the image the app draws these boxes on top of.
                     orig_x0, orig_y0, orig_x1, orig_y1 = map_box_to_original(
                         rotation_matrix_inv, abs_x0, abs_y0, abs_x1, abs_y1
                     )
@@ -974,6 +1012,12 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     if not results:
         return 'No characters detected', 0.0, [], {'width': image_width, 'height': image_height}
 
+    # ---- DISAMBIGUATION ----
+    # output_parts is now genuinely one space-joined string PER LINE,
+    # which is exactly the shape resolve_output_parts documents that it
+    # expects. If no word set was supplied, both output_parts and each
+    # result's 'char' keep their raw placeholder form unchanged rather
+    # than crashing.
     if filipino_word_set:
         resolved_lines, resolution_log = resolve_output_parts(output_parts, filipino_word_set)
 

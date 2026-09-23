@@ -44,7 +44,7 @@ class InfoModal extends StatelessWidget {
             const Divider(height: 40),
 
             const Text(
-              "How to Write for the AI",
+              "How to Write for Baybayin",
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.brown),
             ),
             const SizedBox(height: 10),
@@ -54,7 +54,24 @@ class InfoModal extends StatelessWidget {
             ),
             const SizedBox(height: 15),
 
-            // Supported Characters Section
+            // How-to-write reference image. Replace the asset path
+            // below with your actual image, and make sure it's listed
+            // under `flutter: assets:` in pubspec.yaml or it won't
+            // render.
+            ClipRRect(
+              borderRadius: BorderRadius.circular(15),
+              child: Image.asset(
+                'assets/images/how_to_write_baybayin.png',
+                width: double.infinity,
+                fit: BoxFit.contain,
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Supported Characters - now shown as a reference image
+            // instead of individual character chips. Replace the
+            // asset path below with your actual image.
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -69,22 +86,13 @@ class InfoModal extends StatelessWidget {
                     style: TextStyle(fontWeight: FontWeight.bold, color: Colors.brown),
                   ),
                   const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    alignment: WrapAlignment.center,
-                    children: _buildCharacterChips(),
-                  ),
-                  const Divider(height: 30, color: Colors.brown),
-                  const Text(
-                    "Vowel Markers (Kudlit)",
-                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.brown),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    "Bar Above: E  •  Dot Above: I  •  Dot Below: O  •  Bar Below: U  •  Cross/X: No Vowel",
-                    style: TextStyle(fontSize: 12, color: Colors.brown),
-                    textAlign: TextAlign.center,
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.asset(
+                      'assets/images/supported_characters.png',
+                      width: double.infinity,
+                      fit: BoxFit.contain,
+                    ),
                   ),
                 ],
               ),
@@ -133,25 +141,6 @@ class InfoModal extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  List<Widget> _buildCharacterChips() {
-    final chars = ['ᜀ', 'ᜁ', 'ᜂ', 'ᜊ', 'ᜃ', 'ᜇ', 'ᜄ', 'ᜑ', 'ᜎ', 'ᜋ', 'ᜈ', 'ᜅ', 'ᜉ', 'ᜐ', 'ᜆ', 'ᜏ', 'ᜌ'];
-    return chars.map((c) => Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          )
-        ],
-      ),
-      child: Text(c, style: const TextStyle(fontSize: 22, color: Colors.brown)),
-    )).toList();
   }
 }
 

@@ -18,6 +18,7 @@ dependencies:
   crop_your_image: ^1.0.6
   image: ^4.0.17
   camera: ^0.10.5+9
+  sensors_plus: ^6.1.1
 
 dev_dependencies:
   flutter_test:

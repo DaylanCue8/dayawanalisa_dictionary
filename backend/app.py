@@ -8,8 +8,12 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 from baybayin_marker_service import preprocess_and_predict as preprocess_and_predict_marker
-from baybayin_pen_service import preprocess_and_predict as preprocess_and_predict_pen
+from baybayin_pen_service import (
+    preprocess_and_predict as preprocess_and_predict_pen,
+    BLURRY_IMAGE_MESSAGE,
+)
 from tagalog_to_baybayin import TagalogToBaybayin
+from baybayin_disambiguation import load_filipino_word_set
 
 app = Flask(__name__)
 CORS(app)
@@ -34,6 +38,13 @@ try:
 except Exception as e:
     print(f"❌ Critical Error: Could not load AI files. {e}")
     base_model, dia_model, base_classes, dia_classes = None, None, [], []
+
+try:
+    FILIPINO_WORD_SET = load_filipino_word_set('Tagalog_words_74419+.csv')
+    print(f"✅ Filipino dictionary loaded: {len(FILIPINO_WORD_SET)} unique words.")
+except Exception as e:
+    print(f"❌ Could not load Filipino word list: {e}")
+    FILIPINO_WORD_SET = set()
 
 # --- 2. DATABASE CONFIG ---
 db_config = {
@@ -146,16 +157,21 @@ def translate():
             predict_fn = get_predict_function(input_type)
             text, conf, results, image_dims = predict_fn(
                 image_bytes, session_id, base_model, dia_model, base_classes, dia_classes,
+                filipino_word_set=FILIPINO_WORD_SET,
             )
 
             log_detections(session_id, results)
-            # "Success" and "Low_Confidence" both mean "there's something
-            # to show the evaluation modal for." An empty results list -
-            # no characters segmented, or the image failed to decode - is
-            # a different situation entirely and needs its own status, so
-            # the frontend can show "no letters found" instead of popping
-            # the evaluation sheet with an empty detections list.
-            if not results:
+
+            # Blur rejection is checked FIRST and separately - it must
+            # never fall through to "No_Characters", since that status
+            # implies a clean photo with nothing legible on it, which
+            # is a different problem the user would fix differently
+            # (write more clearly) than a blurry photo (hold the phone
+            # steadier). Only the pen pipeline currently performs this
+            # check, so this branch is a no-op for marker uploads.
+            if text == BLURRY_IMAGE_MESSAGE:
+                status = "Blurry_Image"
+            elif not results:
                 status = "No_Characters"
             elif conf > 60:
                 status = "Success"
@@ -190,6 +206,9 @@ def translate():
             })
 
     except Exception as e:
+        import traceback
+        print("❌ /api/translate crashed with an exception:")
+        traceback.print_exc()
         update_session_status(session_id, 'Error')
         return jsonify({"error": str(e)}), 500
 
@@ -215,6 +234,18 @@ def archive_bulk():
             is_eligible = d.get('is_eligible', False)
 
             if not char or not temp_path or not os.path.exists(temp_path) or not is_eligible:
+                continue
+
+            # A char still containing '{' or '/' means an ambiguity
+            # slot (e.g. '{d/r}a', 'b{e/i}') never got resolved - most
+            # likely the Filipino word set failed to load at startup.
+            # Archiving it would both corrupt the folder structure
+            # (os.makedirs treats the embedded '/' as a path separator,
+            # silently creating nested garbage folders instead of one
+            # per letter) and record an unresolved guess as if it were
+            # a confirmed training label, so these are skipped rather
+            # than archived.
+            if '{' in char or '/' in char:
                 continue
 
             char_dir = os.path.join(ARCHIVE_ROOT, char)

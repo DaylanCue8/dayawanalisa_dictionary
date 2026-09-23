@@ -1,4 +1,11 @@
 class TagalogToBaybayinLocalTranslator {
+  // Defined once, then reused below, so 'da' and 'ra' are GUARANTEED to
+  // be the exact same Unicode codepoint - Baybayin traditionally uses
+  // one letter for both D and R sounds (they're allophones), so 'ra'
+  // must never be typed as a separate literal glyph, which risks the
+  // visually-similar-but-different RA codepoint (U+171D) being used by
+  // mistake instead of DA (U+1707).
+  static const String _daRaGlyph = 'ᜇ';
   final Map<String, String> baseMap = {
     'a': 'ᜀ',
     // Baybayin has only 3 independent vowel letters: A, I/E, and U/O.
@@ -10,8 +17,8 @@ class TagalogToBaybayinLocalTranslator {
     'u': 'ᜂ',
     'ba': 'ᜊ',
     'ka': 'ᜃ',
-    'da': 'ᜇ',
-    'ra': 'ᜍ',
+    'da': _daRaGlyph,
+    'ra': _daRaGlyph,
     'ga': 'ᜄ',
     'ha': 'ᜑ',
     'la': 'ᜎ',

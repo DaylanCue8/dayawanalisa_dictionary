@@ -96,6 +96,22 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
         _imageWidth = (response['image_width'] as num?)?.toDouble() ?? 0;
         _imageHeight = (response['image_height'] as num?)?.toDouble() ?? 0;
 
+        // Non-null only when the photo's letters came out too small
+        // for diacritics to reliably survive segmentation (see
+        // LOW_RESOLUTION_WARNING_THRESHOLD_PX in the backend) - a
+        // resolution issue with THIS photo, not a translation error,
+        // so it's shown alongside the result rather than replacing it.
+        final lowResolutionWarning = response['low_resolution_warning'] as String?;
+        if (lowResolutionWarning != null && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(lowResolutionWarning),
+              duration: const Duration(seconds: 5),
+              backgroundColor: Colors.orange[800],
+            ),
+          );
+        }
+
         String status = response['status']?.toString().toLowerCase() ?? '';
         if (status == 'success' || status == 'low_confidence') {
           Future.delayed(const Duration(milliseconds: 500), () {
@@ -142,7 +158,97 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     await _processCroppedImage(croppedBytes);
   }
 
+  // ---- Blur detection (gallery path) ----
+  // Mirrors camera_capture_screen.dart's _computeBlurScore exactly -
+  // same Laplacian-variance metric, same threshold - so a gallery photo
+  // gets the same immediate "too blurry, try again" feedback a camera
+  // capture already gets, instead of only finding out after a full
+  // upload round-trip to the backend's own blur check. This can't fix
+  // a gallery photo's actual resolution or focus (those are baked into
+  // the file already), but it DOES catch true blur (motion/focus
+  // softness) before wasting time uploading it.
+  static const double _galleryBlurVarianceThreshold = 60.0;
+
+  double _computeBlurScore(img.Image image) {
+    final resized = img.copyResize(image, width: 600);
+    final gray = img.grayscale(resized);
+    final width = gray.width;
+    final height = gray.height;
+
+    double sum = 0.0;
+    double sumSq = 0.0;
+    int count = 0;
+
+    int luminanceAt(int x, int y) => gray.getPixel(x, y).r.toInt();
+
+    for (int y = 1; y < height - 1; y++) {
+      for (int x = 1; x < width - 1; x++) {
+        final laplacian = -4 * luminanceAt(x, y)
+            + luminanceAt(x - 1, y) + luminanceAt(x + 1, y)
+            + luminanceAt(x, y - 1) + luminanceAt(x, y + 1);
+        sum += laplacian;
+        sumSq += laplacian * laplacian;
+        count++;
+      }
+    }
+
+    if (count == 0) return 0.0;
+    final mean = sum / count;
+    return (sumSq / count) - (mean * mean);
+  }
+
+  Future<bool> _confirmRetakeIfBlurry(Uint8List bytes) async {
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return false;
+
+    final blurScore = _computeBlurScore(decoded);
+    if (blurScore >= _galleryBlurVarianceThreshold) return false;
+
+    if (!mounted) return true;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Photo is too blurry'),
+        content: const Text(
+          'This photo looks blurry, which will make the handwriting '
+          'hard to read correctly. Try picking a sharper photo, or use '
+          'the in-app camera instead for a steadier, higher-resolution '
+          'capture.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+    return true;
+  }
+
   Future<void> _uploadFromGallery() async {
+    // Gallery photos come from whatever camera app originally took
+    // them - unlike CameraCaptureScreen, this app has no control over
+    // the resolution or focus that photo was captured at, which can't
+    // be fixed after the fact (see _confirmRetakeIfBlurry's own note
+    // on this). Shown as a brief, non-blocking notice rather than a
+    // dialog the person has to dismiss - it informs the choice without
+    // getting in the way of it, since gallery upload is still a fully
+    // legitimate option for a photo taken earlier or shared by someone
+    // else.
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Tip: the in-app Camera locks focus and resolution for '
+            'more reliable results. Gallery works too, but results can '
+            'vary depending on how the photo was originally taken.',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
+
     final XFile? photo = await _picker.pickImage(
       source: ImageSource.gallery,
       // No imageQuality / maxWidth / maxHeight: those silently
@@ -153,6 +259,14 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     if (photo == null) return;
 
     final rawBytes = await photo.readAsBytes();
+
+    // Checked BEFORE _handleRawImage (orientation-normalize -> crop ->
+    // upload), so a blurry pick is caught immediately rather than
+    // after the person has already gone through cropping and waited
+    // for an upload, only for the backend to reject it.
+    final isBlurry = await _confirmRetakeIfBlurry(rawBytes);
+    if (isBlurry) return;
+
     await _handleRawImage(rawBytes);
   }
 
@@ -179,6 +293,16 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
               .whereType<Map>()
               .map((d) => Map<String, dynamic>.from(d))
               .toList(),
+          // The backend's reported dimensions for THIS response - these
+          // already exist in state (_imageWidth/_imageHeight, set right
+          // above from the same response) but were never being passed
+          // through to the result screen. Without them, the result
+          // screen has no way to detect or correct for a mismatch
+          // between the backend's coordinate space and its own local
+          // decode of sourceImage, which is what caused crops to land
+          // on the wrong sub-region (e.g. showing only half a letter).
+          imageWidth: (data['image_width'] as num?)?.toDouble() ?? 0,
+          imageHeight: (data['image_height'] as num?)?.toDouble() ?? 0,
         ),
       ),
     );
