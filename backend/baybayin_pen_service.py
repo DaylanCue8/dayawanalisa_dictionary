@@ -23,9 +23,7 @@ def decode_grayscale_exif_corrected(image_bytes):
 # ---- BLUR DETECTION ----
 # Runs on the RAW decoded image, BEFORE enhance_image_quality's unsharp-
 # mask sharpening step - sharpening would artificially inflate the
-# Laplacian variance and defeat this check, since it's designed to
-# exaggerate edges regardless of whether the underlying photo was
-# actually in focus.
+# Laplacian variance and defeat this check.
 BLUR_RESIZE_WIDTH = 800
 # STARTING ESTIMATE - not yet calibrated. Take several genuinely sharp
 # and several genuinely blurry photos with your test devices, run
@@ -42,10 +40,7 @@ BLURRY_IMAGE_MESSAGE = (
 def compute_blur_score(gray_img, resize_width=BLUR_RESIZE_WIDTH):
     """
     Higher score = sharper. Resizing to a fixed width first keeps the
-    score comparable across different camera resolutions - a raw
-    Laplacian variance scales somewhat with image size, so without this
-    a high-res sharp photo and a low-res blurry one could accidentally
-    land near the same number.
+    score comparable across different camera resolutions.
     """
     height, width = gray_img.shape[:2]
     if width > resize_width:
@@ -61,10 +56,8 @@ MIN_LONG_SIDE_PX = 1000
 def enhance_image_quality(gray_img):
     """
     Recovers usable ink detail from a low-quality phone photo before it
-    goes into Otsu binarization. Order matters: denoise first so CLAHE
-    doesn't amplify noise into fake contrast, then sharpen last so the
-    unsharp mask sharpens real (already-denoised, already-contrasted)
-    edges rather than noise grain.
+    goes into Otsu binarization. Denoise first so CLAHE doesn't amplify
+    noise, then sharpen last so the unsharp mask sharpens real edges.
     """
     height, width = gray_img.shape[:2]
     long_side = max(height, width)
@@ -86,6 +79,34 @@ def enhance_image_quality(gray_img):
 
 def ensure_dirs():
     os.makedirs(TEMP_ROOT, exist_ok=True)
+
+
+_UNSAFE_FILENAME_CHARS = re.compile(r'[^A-Za-z0-9_-]')
+
+
+def _safe_filename_part(text):
+    """Makes a class name safe to use inside a filename."""
+    return _UNSAFE_FILENAME_CHARS.sub('-', str(text)) or 'unknown'
+
+
+def _crop_label_prefix(base_name, dia_name, kudlit_position):
+    """
+    Filename prefix describing what was detected:
+      no kudlit      -> 'Ba'
+      dot kudlit     -> 'Ba_Dot_Above' / 'Ba_Dot_Below'
+      cross kudlit   -> 'Ba_Cross'   (both the 'X' and 'Cross' classes)
+    """
+    prefix = _safe_filename_part(base_name)
+    dia = str(dia_name).strip().lower()
+    if dia in ('', 'none'):
+        return prefix
+    if 'cross' in dia or 'x' in dia:
+        return prefix + '_Cross'
+    if 'dot' in dia:
+        if kudlit_position in ('Above', 'Below'):
+            return f'{prefix}_Dot_{kudlit_position}'
+        return prefix + '_Dot'
+    return f'{prefix}_{_safe_filename_part(dia_name)}'
 
 
 def preprocess_image(gray_img):
@@ -172,6 +193,11 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
                      expand_frac=LINE_BAND_EXPAND_FRAC):
     """
     Returns a list of (y0, y1) bands, one per detected text line.
+
+    Each core band is expanded, then SNAPPED outward to the nearest row
+    with zero ink (never past the midpoint shared with the neighboring
+    line), so a band boundary can never cut through a diacritic that
+    hangs further from its base than usual.
     """
     row_profile = _row_letter_counts(binary_img).astype(np.float64)
     if row_profile.max() <= 0:
@@ -209,25 +235,6 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
         else:
             merged.append([start, end])
 
-    # A fixed expand_frac (a single fraction of the MEDIAN line height,
-    # applied identically to every line) can truncate a diacritic mark
-    # that happens to sit further from its base than that fraction
-    # reaches - e.g. an X mark drawn further below its base than usual
-    # in messier handwriting. The slice below in preprocess_and_predict
-    # (line_bin = binary[band_y0:band_y1, :]) discards everything
-    # outside the band entirely - so a boundary that cuts through ink
-    # means that ink is PERMANENTLY gone before segmentation ever runs,
-    # not just mis-assigned to the wrong line.
-    #
-    # Fix: after computing the expand-based candidate boundary, snap it
-    # OUTWARD to the nearest row with ZERO ink at all. A genuinely
-    # blank row is the only thing guaranteed not to be cutting through
-    # real ink, so this can't truncate a mark regardless of how far it
-    # hangs from its base - it only stops widening once it finds empty
-    # space, or reaches the midpoint boundary shared with the
-    # neighboring line (which a band must never cross, since that's
-    # exactly the cross-line bridging this whole line-isolation
-    # approach exists to prevent).
     has_ink_per_row = (binary_img > 0).any(axis=1)
 
     def _snap_to_blank_row(candidate_idx, direction, limit):
@@ -253,10 +260,44 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
     return bands
 
 
+def split_into_line_masks(binary_img, bands):
+    """
+    Assigns every connected ink component to exactly ONE line band and
+    returns one full-size mask per band.
+
+    Slicing the image by rows (binary[y0:y1]) can cut straight through
+    a cross kudlit that hangs between two tightly spaced lines: half of
+    it stays with its letter and the other half lands in the next line
+    as a stray fragment. Assigning whole components avoids that - a
+    mark is never divided between lines.
+
+    A component goes to the band it overlaps most. If it lies entirely
+    in a gap between bands, it goes to the band whose center is nearest.
+    """
+    if not bands:
+        return []
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary_img, connectivity=8
+    )
+    component_band = np.full(num_labels, -1, dtype=np.int32)
+    band_centers = [(b0 + b1) / 2.0 for b0, b1 in bands]
+    for i in range(1, num_labels):
+        top = int(stats[i, cv2.CC_STAT_TOP])
+        bottom = top + int(stats[i, cv2.CC_STAT_HEIGHT])
+        overlaps = [min(bottom, b1) - max(top, b0) for b0, b1 in bands]
+        if max(overlaps) > 0:
+            component_band[i] = int(np.argmax(overlaps))
+        else:
+            center = (top + bottom) / 2.0
+            component_band[i] = int(np.argmin([abs(center - c) for c in band_centers]))
+    band_map = component_band[labels]
+    return [np.where(band_map == k, 255, 0).astype(np.uint8) for k in range(len(bands))]
+
+
 def otsu_1d_threshold(gaps):
     """
-    Finds the optimal threshold separating small letter gaps from large word gaps
-    using Otsu's method on 1D gap values.
+    Finds the optimal threshold separating small letter gaps from large
+    word gaps using Otsu's method on 1D gap values.
     """
     if len(gaps) < 2:
         return 10.0
@@ -268,7 +309,6 @@ def otsu_1d_threshold(gaps):
     if max_g - min_g < 5:
         return max_g + 1.0
 
-    # Try 50 candidate thresholds between min and max gap
     thresholds = np.linspace(min_g, max_g, 50)
     best_thresh = thresholds[0]
     best_variance = -1
@@ -282,8 +322,6 @@ def otsu_1d_threshold(gaps):
 
         w0 = len(bg) / len(gaps)
         w1 = len(fg) / len(gaps)
-
-        # Inter-class variance
         var_between = w0 * w1 * ((bg.mean() - fg.mean()) ** 2)
 
         if var_between > best_variance:
@@ -291,6 +329,7 @@ def otsu_1d_threshold(gaps):
             best_thresh = t
 
     return best_thresh
+
 
 def group_line_boxes_into_words(boxes):
     if not boxes:
@@ -300,10 +339,7 @@ def group_line_boxes_into_words(boxes):
     if len(row) == 1:
         return [row]
 
-    # Calculate horizontal gaps (x_min_next - x_max_current)
     gaps = [row[i][0] - row[i - 1][2] for i in range(1, len(row))]
-
-    # Find mathematical cutoff between small gaps and large gaps
     word_gap = otsu_1d_threshold(gaps)
 
     words = []
@@ -466,24 +502,41 @@ def split_into_single_glyphs(crop_bin):
     return [tighten_to_ink(crop_bin, box) for box in clusters], kernel_size
 
 
-def crop_and_pad_to_square(img, pad_frac=0.15):
-    coords = cv2.findNonZero(img)
+# ---- MODEL INPUT NORMALIZATION ----
+# Must produce EXACTLY the same framing as the training data, which was
+# made by clean_raw_glyph: crop to ink, add a margin of MARGIN_FRAC *
+# the longer side, pad to a centered square (no stretching), resize to
+# 56x56 with INTER_AREA. MODEL_MARGIN_FRAC must stay equal to
+# MARGIN_FRAC in the raw photo cleaner - if you change one, change the
+# other, re-clean the dataset and retrain.
+MODEL_INPUT_SIZE = 56
+MODEL_MARGIN_FRAC = 0.12
+
+
+def normalize_for_model(mask, margin_frac=MODEL_MARGIN_FRAC, size=MODEL_INPUT_SIZE):
+    """Returns a 56x56 uint8 white-on-black image framed like the training set."""
+    coords = cv2.findNonZero(mask)
     if coords is None:
-        return img
+        return np.zeros((size, size), dtype=np.uint8)
     x, y, w, h = cv2.boundingRect(coords)
-    cropped = img[y:y + h, x:x + w]
-    side = max(w, h)
-    pad = max(int(side * pad_frac), 1)
-    side_padded = side + 2 * pad
-    square = np.zeros((side_padded, side_padded), dtype=img.dtype)
-    y_offset = (side_padded - h) // 2
-    x_offset = (side_padded - w) // 2
-    square[y_offset:y_offset + h, x_offset:x_offset + w] = cropped
-    return square
+    crop = mask[y:y + h, x:x + w]
+    margin = int(margin_frac * max(w, h))
+    side = max(w, h) + 2 * margin
+    square = np.zeros((side, side), dtype=np.uint8)
+    y_off, x_off = (side - h) // 2, (side - w) // 2
+    square[y_off:y_off + h, x_off:x_off + w] = crop
+    return cv2.resize(square, (size, size), interpolation=cv2.INTER_AREA)
+
+
+def _to_model_float(mask):
+    return normalize_for_model(mask).astype(np.float32) / 255.0
 
 
 # ---- PEN: post-segmentation stray-diacritic merge ----
-DIACRITIC_MERGE_MIN_HORIZONTAL_OVERLAP_FRAC = 0.5
+# Lowered from 0.5: hand-drawn crosses are often shifted to one side of
+# the letter they belong to, so requiring half of the cross's width to
+# sit directly above/below the letter left too many of them unmerged.
+DIACRITIC_MERGE_MIN_HORIZONTAL_OVERLAP_FRAC = 0.3
 DIACRITIC_MERGE_MAX_VERTICAL_GAP_MULTIPLIER = 3.0
 DIACRITIC_MERGE_ABSOLUTE_GAP_CAP_MULTIPLIER = 2.5
 DIACRITIC_MERGE_SIZE_RATIO_THRESHOLD = 0.45
@@ -567,6 +620,25 @@ def merge_stray_diacritic_boxes(boxes,
     return [b for b in current_boxes if b is not None]
 
 
+# A real base glyph is never this small next to its neighbors. Anything
+# that is still this small AFTER the merge step is an orphaned fragment
+# (e.g. a piece of a cross), and would otherwise be forced into some
+# class by the SVM, which has no "noise" class.
+ORPHAN_FRAGMENT_MIN_FRAC = 0.35
+
+
+def drop_orphan_fragments(boxes, min_frac=ORPHAN_FRAGMENT_MIN_FRAC):
+    if len(boxes) < 3:
+        return list(boxes)
+    median_height = float(np.median([y1 - y0 for _, y0, _, y1 in boxes]))
+    median_width = float(np.median([x1 - x0 for x0, _, x1, _ in boxes]))
+    return [
+        box for box in boxes
+        if not ((box[3] - box[1]) < min_frac * median_height
+                and (box[2] - box[0]) < min_frac * median_width)
+    ]
+
+
 def format_paragraph(lines):
     normalized = [line.strip().lower() for line in lines]
     normalized = [line for line in normalized if line]
@@ -597,7 +669,7 @@ def _distance_transform_gap(labels, mask_label_ids, candidate_label_id):
 
 
 # ---- PEN: base/diacritic separation ----
-GAP_THICKNESS_MULTIPLIER = 1.0  # BREAK CODE NEED TO BE ADJUST
+GAP_THICKNESS_MULTIPLIER = 1.0  # TODO: still being calibrated
 MAX_GAP_THRESHOLD_PIXELS = 6.0
 MIN_PIXELS_FOR_SHAPE_ANALYSIS = 16
 SOLIDITY_THRESHOLD = 0.80
@@ -649,13 +721,11 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
     dia_confidence = 0.0
 
     if num_labels <= 1:
-        return predicted_base_name, predicted_dia_name, '', 0.0
+        return predicted_base_name, predicted_dia_name, '', 0.0, position
 
+    # Whole glyph (base + any marks), framed exactly like the training set
     whole_mask = np.where(native_crop > 0, 255, 0).astype(np.uint8)
-    whole_coords = cv2.findNonZero(whole_mask)
-    wx, wy, ww, wh = cv2.boundingRect(whole_coords)
-    whole_crop = whole_mask[wy:wy + wh, wx:wx + ww]
-    whole_norm = cv2.resize(whole_crop, (56, 56)).astype(np.float32) / 255.0
+    whole_norm = _to_model_float(whole_mask)
     hog_whole = hog(
         whole_norm, orientations=9, pixels_per_cell=(8, 8),
         cells_per_block=(2, 2), transform_sqrt=True, visualize=False,
@@ -675,31 +745,19 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
     else:
         base_mask_full = np.isin(labels, base_idx_list).astype(np.uint8) * 255
         coords = cv2.findNonZero(base_mask_full)
-        bx, by, bw, bh = cv2.boundingRect(coords)
-        base_crop = base_mask_full[by:by + bh, bx:bx + bw]
-        base_norm = cv2.resize(base_crop, (56, 56)).astype(np.float32) / 255.0
+        bx, by, bw, bh = cv2.boundingRect(coords)  # still needed for position check
+        base_norm = _to_model_float(base_mask_full)
 
         dx, dy, dw, dh, _ = stats[dia_idx]
         if dw == 0 or dh == 0:
             predicted_base_name = whole_base_name
             base_confidence = whole_confidence
-            return predicted_base_name, predicted_dia_name, predicted_base_name, base_confidence
+            return predicted_base_name, predicted_dia_name, predicted_base_name, base_confidence, position
 
         dia_mask_full = (labels == dia_idx).astype(np.uint8) * 255
         dia_crop = dia_mask_full[dy:dy + dh, dx:dx + dw]
 
-        # NOTE: crop_and_pad_to_square() intentionally NOT applied here
-        # anymore. Training (load_and_preprocess in the training script)
-        # resizes diacritic crops straight to 56x56 with no aspect-ratio
-        # padding, so the dia_model was never trained on padded-square
-        # inputs. Feeding it a padded crop at inference time was a
-        # train/inference mismatch that skewed dia_confidence (though it
-        # did not change the final diacritic LABEL, since that label is
-        # decided below by shape heuristics, not by dia_prediction).
-        # Resizing dia_crop directly here matches what the model actually
-        # learned. If you want aspect-preserving square padding, add
-        # crop_and_pad_to_square() into the TRAINING pipeline too and
-        # retrain model_dia.pkl - don't patch it in on only one side.
+        # Solidity check only - this upscaled crop is NOT fed to the model
         dia_upscaled = cv2.resize(dia_crop, (40, 40), interpolation=cv2.INTER_CUBIC)
         _, dia_upscaled = cv2.threshold(dia_upscaled, 127, 255, cv2.THRESH_BINARY)
 
@@ -716,7 +774,7 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
         else:
             solidity = 1.0
 
-        dia_norm = cv2.resize(dia_crop, (56, 56)).astype(np.float32) / 255.0
+        dia_norm = _to_model_float(dia_mask_full)
 
         hog_base = hog(
             base_norm, orientations=9, pixels_per_cell=(8, 8),
@@ -737,14 +795,16 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
         is_too_small_for_shape_analysis = (dw * dh) < MIN_PIXELS_FOR_SHAPE_ANALYSIS
 
-        # NOTE: the shape-heuristic override (small-area -> 'Dot',
-        # low-solidity -> 'X'/'Cross', else -> 'Dot') that used to sit
-        # here has been removed. predicted_dia_name now stays exactly
-        # what dia_model predicted above (svm_raw_dia_prediction).
-        # `solidity` and `is_too_small_for_shape_analysis` are still
-        # computed: solidity is kept for the debug print below (now
-        # informational only), and is_too_small_for_shape_analysis is
-        # still used by `prefer_for_fragment` further down.
+        if is_too_small_for_shape_analysis:
+            predicted_dia_name = 'Dot'
+        elif solidity < SOLIDITY_THRESHOLD:
+            available_classes = [str(value).lower() for value in dia_classes]
+            if 'x' in available_classes:
+                predicted_dia_name = 'X'
+            elif 'cross' in available_classes:
+                predicted_dia_name = 'Cross'
+        else:
+            predicted_dia_name = 'Dot'
 
         force_for_vowel = whole_base_name in ('A', 'EI', 'OU') and whole_confidence >= base_confidence
         prefer_for_fragment = whole_confidence >= base_confidence and is_too_small_for_shape_analysis
@@ -765,10 +825,10 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
         if debug:
             print(f"  [pen debug] dw={dw}, dh={dh}, area={dw * dh}, "
-                  f"solidity={solidity:.2f} (threshold={SOLIDITY_THRESHOLD}, informational only), "
+                  f"solidity={solidity:.2f} (threshold={SOLIDITY_THRESHOLD}), "
                   f"too_small={is_too_small_for_shape_analysis}, "
                   f"gap_threshold_used={gap_threshold_used:.2f}, "
-                  f"svm_dia_pred='{svm_raw_dia_prediction}' (now authoritative), "
+                  f"split_svm_pred='{svm_raw_dia_prediction}', "
                   f"whole_crop_pred='{whole_base_name}' ({whole_confidence:.2f}), "
                   f"position='{position}'")
 
@@ -794,7 +854,7 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
     confidence = base_confidence
     if predicted_dia_name != 'None':
         confidence = min(base_confidence, dia_confidence)
-    return predicted_base_name, predicted_dia_name, final_output_text, confidence
+    return predicted_base_name, predicted_dia_name, final_output_text, confidence, position
 
 
 _AMBIGUITY_SLOT_PATTERN = re.compile(r'\{[a-z]/[a-z]\}')
@@ -863,9 +923,22 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     if not line_bands:
         return 'No characters detected', 0.0, [], {'width': image_width, 'height': image_height}
 
+    # Each connected ink component is assigned to ONE line, so a cross
+    # hanging between two tight lines is never sliced in half.
+    line_masks = split_into_line_masks(binary, line_bands)
+
+    # text_lines holds (words, line_mask) pairs. Later cropping reads
+    # from the line's own mask, not the whole page, so ink from a
+    # neighboring line can't leak into a glyph's crop.
     text_lines = []
-    for band_y0, band_y1 in line_bands:
-        line_bin = binary[band_y0:band_y1, :]
+    for (band_y0, band_y1), full_mask in zip(line_bands, line_masks):
+        rows_with_ink = np.where(full_mask.any(axis=1))[0]
+        if rows_with_ink.size == 0:
+            continue
+        # Use the real vertical extent of this line's ink (its marks may
+        # hang beyond the original band).
+        band_y0, band_y1 = int(rows_with_ink.min()), int(rows_with_ink.max()) + 1
+        line_bin = full_mask[band_y0:band_y1, :]
 
         segment_merge_kernel = estimate_segment_merge_kernel(line_bin)
         if debug:
@@ -881,6 +954,12 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
             print(f"  [pen debug] band=({band_y0},{band_y1}) "
                   f"merge_stray_diacritic_boxes: {boxes_before_merge} -> {len(line_boxes)}")
 
+        boxes_before_orphan_filter = len(line_boxes)
+        line_boxes = drop_orphan_fragments(line_boxes)
+        if debug and len(line_boxes) != boxes_before_orphan_filter:
+            print(f"  [pen debug] band=({band_y0},{band_y1}) "
+                  f"drop_orphan_fragments: {boxes_before_orphan_filter} -> {len(line_boxes)}")
+
         if not line_boxes:
             continue
 
@@ -889,11 +968,11 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         ]
         words = group_line_boxes_into_words(line_boxes)
         if words:
-            text_lines.append(words)
+            text_lines.append((words, full_mask))
 
     if debug:
         print(f"  [pen debug] paragraph structure: {len(text_lines)} line(s), "
-              f"words per line = {[len(line) for line in text_lines]}")
+              f"words per line = {[len(words) for words, _ in text_lines]}")
 
     if not text_lines:
         return 'No characters detected', 0.0, [], {'width': image_width, 'height': image_height}
@@ -907,14 +986,14 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     result_indices_per_line = []
 
     crop_index = 0
-    for line in text_lines:
+    for line, line_mask in text_lines:
         line_words = []
         line_word_indices = []
         for word_group in line:
             word_parts = []
             word_result_indices = []
             for x0, y0, x1, y1 in word_group:
-                crop_offset, crop = tight_crop_glyph_with_offset(binary[y0:y1, x0:x1])
+                crop_offset, crop = tight_crop_glyph_with_offset(line_mask[y0:y1, x0:x1])
                 if crop is None:
                     continue
                 tight_abs_x = x0 + crop_offset[0]
@@ -923,7 +1002,7 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                 single_glyph_crops, kernel_used = split_into_single_glyphs(crop)
 
                 for local_box, glyph_crop in single_glyph_crops:
-                    base_name, dia_name, final_text, confidence = classify_glyph(
+                    base_name, dia_name, final_text, confidence, kudlit_position = classify_glyph(
                         glyph_crop, base_model, dia_model, base_classes, dia_classes, debug=debug,
                     )
                     if base_name == 'Unknown':
@@ -941,10 +1020,21 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                         rotation_matrix_inv, abs_x0, abs_y0, abs_x1, abs_y1
                     )
 
+                    # Named after what the model saw, e.g. 'A_136_6103f3.png',
+                    # 'Ba_Dot_Above_12_efba0c.png' or 'Ba_Cross_12_efba0c.png'
+                    # (class[_kudlit[_position]]_cropIndex_randomId). Built from
+                    # base_name/dia_name/position and NOT from final_text, because
+                    # final_text can still hold ambiguity slots like '{d/r}a'
+                    # whose '/' would turn into a missing subfolder and make
+                    # cv2.imwrite silently fail. Saved as PNG (lossless) in the
+                    # same 56x56 training format, so archived crops can go
+                    # straight back into the dataset.
                     crop_path = os.path.join(
-                        session_dir, f'{final_text}_{crop_index}_{uuid.uuid4().hex[:6]}.jpg'
+                        session_dir,
+                        f'{_crop_label_prefix(base_name, dia_name, kudlit_position)}'
+                        f'_{crop_index}_{uuid.uuid4().hex[:6]}.png'
                     )
-                    cv2.imwrite(crop_path, glyph_crop)
+                    cv2.imwrite(crop_path, normalize_for_model(glyph_crop))
                     word_result_indices.append(len(results))
                     results.append({
                         'char': final_text,

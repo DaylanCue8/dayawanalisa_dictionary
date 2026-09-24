@@ -106,7 +106,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
       // in the backend pipeline after testing this.
       final controller = CameraController(
         backCamera,
-        ResolutionPreset.veryHigh,
+        ResolutionPreset.max,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
