@@ -4,6 +4,7 @@ import 'package:flutter/rendering.dart' show applyBoxFit, FittedSizes;
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 import '../services/api_service.dart';
+import '../services/offline_recognizer.dart';
 import '../widgets/image_cropper_widget.dart';
 import '../screens/camera_capture_screen.dart';
 import '../screens/baybayin_result_screen.dart';
@@ -22,6 +23,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   final ApiService _apiService = ApiService();
   final ImagePicker _picker = ImagePicker();
 
+  // true  = recognize on the phone (offline, Chaquopy - Android only)
+  // false = send the photo to the Flask server like before
+  static const bool _useOfflineRecognizer = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // Load the models in the background so the first scan isn't slow
+    if (_useOfflineRecognizer) OfflineRecognizer.warmUp();
+  }
+
   String _translatedResult = "Result will appear here";
   bool _isLoading = false;
   Uint8List? _webImage;
@@ -31,6 +43,16 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   List<Map<String, dynamic>> _detections = [];
   double _imageWidth = 0;
   double _imageHeight = 0;
+
+  // The last successful result, kept so the person can open the result
+  // screen again after going back (button, tap on the result bar, or
+  // swipe right-to-left on the image).
+  Map<String, dynamic>? _lastResultData;
+
+  // Swipe-left tracking (finger position when it touched the image)
+  Offset? _swipeStart;
+  Offset? _tabSwipeStart;
+  static const double _swipeMinDistance = 60; // logical pixels
 
   // Which writing-instrument preset the backend should use for
   // stroke-gap / diacritic thresholds. 'marker' covers both thick
@@ -71,14 +93,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
       _isLoading = true;
       _translatedResult = 'Processing Image...';
       _detections = [];
+      _lastResultData = null;
     });
 
-    final response = await _apiService.uploadAndTranslateDetailed(
-      null,
-      'Baybayin to Tagalog',
-      imageBytes: imageBytes,
-      inputType: _inputType,
-    );
+    final response = _useOfflineRecognizer
+        ? await OfflineRecognizer.recognize(imageBytes, inputType: _inputType)
+        : await _apiService.uploadAndTranslateDetailed(
+            null,
+            'Baybayin to Tagalog',
+            imageBytes: imageBytes,
+            inputType: _inputType,
+          );
 
     if (!mounted) return;
 
@@ -114,6 +139,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
 
         String status = response['status']?.toString().toLowerCase() ?? '';
         if (status == 'success' || status == 'low_confidence') {
+          _lastResultData = response;
           Future.delayed(const Duration(milliseconds: 500), () {
             if (mounted) _showResults(imageBytes, response);
           });
@@ -121,7 +147,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
           _translatedResult = 'No Baybayin letters found. Try a clearer crop.';
         }
       } else {
-        _translatedResult = 'Error: Connection Failed';
+        _translatedResult = _useOfflineRecognizer
+            ? 'Error: Could not process the image'
+            : 'Error: Connection Failed';
       }
     });
   }
@@ -283,10 +311,26 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     await _handleRawImage(captured);
   }
 
+  /// Opens the result screen again for the last photo (if there is one).
+  void _openLastResult() {
+    final image = _webImage;
+    final data = _lastResultData;
+    if (_isLoading || image == null || data == null) return;
+    _showResults(image, data);
+  }
+
   void _showResults(Uint8List sourceImage, Map<String, dynamic> data) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => BaybayinResultScreen(
+      // Slides in from the right, so it matches the swipe gesture
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 250),
+        transitionsBuilder: (_, animation, __, child) => SlideTransition(
+          position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
+              .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+          child: child,
+        ),
+        pageBuilder: (_, __, ___) => BaybayinResultScreen(
           sourceImage: sourceImage,
           translatedText: data['translated_text']?.toString() ?? '',
           detections: (data['individual_detections'] as List? ?? [])
@@ -377,17 +421,75 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
             bottom: 0,
             left: 0,
             right: 0,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              color: Colors.black54,
-              child: Text(
-                _translatedResult,
-                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
+            child: GestureDetector(
+              onTap: _lastResultData != null ? _openLastResult : null,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                color: Colors.black54,
+                child: Text(
+                  _translatedResult,
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
               ),
             ),
           ),
       ],
+    );
+  }
+
+  /// Small tab stuck to the right edge of the photo panel (like a drawer
+  /// handle). Tap it, or swipe it to the left, to open the result screen.
+  Widget _buildResultSideTab() {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (e) => _tabSwipeStart = e.position,
+      onPointerUp: (e) {
+        final start = _tabSwipeStart;
+        _tabSwipeStart = null;
+        if (start == null) return;
+        final dx = e.position.dx - start.dx;
+        final dy = e.position.dy - start.dy;
+        final isTap = dx.abs() < 10 && dy.abs() < 10;
+        final isSwipeLeft = dx < -30 && dx.abs() > dy.abs();
+        if (isTap || isSwipeLeft) _openLastResult();
+      },
+      onPointerCancel: (_) => _tabSwipeStart = null,
+      child: Container(
+        width: 30,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: const BoxDecoration(
+          color: Colors.brown,
+          borderRadius: BorderRadius.only(
+            topLeft: Radius.circular(14),
+            bottomLeft: Radius.circular(14),
+          ),
+          boxShadow: [
+            BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(-2, 2)),
+          ],
+        ),
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.chevron_left, color: Colors.white, size: 22),
+            SizedBox(height: 6),
+            RotatedBox(
+              quarterTurns: 3,
+              child: Text(
+                'RESULT',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ),
+            SizedBox(height: 6),
+            Icon(Icons.chevron_left, color: Colors.white, size: 22),
+          ],
+        ),
+      ),
     );
   }
 
@@ -485,14 +587,50 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     return Column(
       children: [
         Expanded(
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 20),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF5F5F5),
-              borderRadius: BorderRadius.circular(15),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: _buildImageDisplay(),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF5F5F5),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  // Swipe right-to-left on the image to open the last result again.
+                  // A Listener (raw touches) is used instead of a GestureDetector:
+                  // it can't be "stolen" by a parent that also handles horizontal
+                  // drags (tabs / page view / scroll view), and it works on
+                  // distance, so a slow swipe counts too.
+                  child: Listener(
+                    behavior: HitTestBehavior.opaque,
+                    onPointerDown: (e) => _swipeStart = e.position,
+                    onPointerUp: (e) {
+                      final start = _swipeStart;
+                      _swipeStart = null;
+                      if (start == null) return;
+                      final dx = e.position.dx - start.dx;
+                      final dy = e.position.dy - start.dy;
+                      if (dx < -_swipeMinDistance && dx.abs() > dy.abs() * 1.5) {
+                        _openLastResult();
+                      }
+                    },
+                    onPointerCancel: (_) => _swipeStart = null,
+                    child: _buildImageDisplay(),
+                  ),
+                ),
+              ),
+              // Side tab on the right edge: tap it or swipe it left to open
+              // the last result again (only shown after a successful scan).
+              if (_lastResultData != null && !_isLoading)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(child: _buildResultSideTab()),
+                ),
+            ],
           ),
         ),
         const SizedBox(height: 16),

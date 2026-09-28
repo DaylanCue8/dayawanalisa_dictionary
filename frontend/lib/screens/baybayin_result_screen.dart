@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,22 +6,20 @@ import 'package:image/image.dart' as img;
 
 /// Full-screen results view for the Baybayin-to-Latin flow, reached after
 /// a successful translate call. Shows the predicted output, a copy
-/// button, and a side-by-side table of each captured character crop
-/// against its predicted Latin equivalent.
+/// button, and a side-by-side table of each character's PROCESSED image
+/// (the exact 56x56 black-and-white glyph the model classified) against
+/// its predicted Latin equivalent.
 class BaybayinResultScreen extends StatefulWidget {
   final Uint8List sourceImage;
   final String translatedText;
   final List<Map<String, dynamic>> detections;
 
   // The backend's reported dimensions for the image it computed bbox
-  // coordinates against. These are NOT guaranteed to equal
-  // img.decodeImage(sourceImage)'s own width/height - e.g. the pen
-  // pipeline's enhance_image_quality step can upscale the image
-  // in-memory before computing bboxes, so the backend's stated
-  // dimensions can be larger than sourceImage's native decoded size.
-  // Without scaling by the ratio between these two, bbox coordinates
-  // land on the wrong sub-region when cropped locally (this was the
-  // bug: crops showing only part of a letter, e.g. half of "ba").
+  // coordinates against. Only used by the raw-crop FALLBACK (for a
+  // detection that arrives without a 'processed_image', e.g. from an
+  // older backend). These are NOT guaranteed to equal the source image's
+  // own decoded size - the pen pipeline can upscale before computing
+  // bboxes - so crops are scaled by the ratio between the two.
   final double imageWidth;
   final double imageHeight;
 
@@ -46,61 +45,65 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     _characterResults = _buildCharacterResults();
   }
 
-  /// Crops each detected glyph out of the same image that was sent to the
-  /// backend. bbox coordinates are pixel coordinates relative to the
-  /// backend's reported (imageWidth, imageHeight) - NOT necessarily the
-  /// same as sourceImage's own decoded dimensions (see the field docs
-  /// above), so a scale factor is computed and applied before cropping.
+  /// Builds one table row per detection. Uses the backend's processed
+  /// glyph ('processed_image', a base64 PNG - white ink on black, 56x56,
+  /// the same image the model saw). Only if that's missing does it fall
+  /// back to cropping the raw photo by bbox.
   /// Mirrors the >=23% confidence floor used elsewhere in the app so
   /// stray low-confidence noise doesn't clutter the breakdown.
   List<_CharacterResult> _buildCharacterResults() {
-    final decoded = img.decodeImage(widget.sourceImage);
     final results = <_CharacterResult>[];
-    if (decoded == null) return results;
-
-    // Scale factor between the backend's coordinate space (what bbox
-    // values are expressed in) and this locally-decoded image's actual
-    // pixel dimensions. When they already match (the common case for
-    // marker input, which never resizes), these are both 1.0 and every
-    // crop behaves exactly as before.
-    final double scaleX = widget.imageWidth > 0
-        ? decoded.width / widget.imageWidth
-        : 1.0;
-    final double scaleY = widget.imageHeight > 0
-        ? decoded.height / widget.imageHeight
-        : 1.0;
+    img.Image? decodedSource; // decoded lazily, only if a fallback is needed
 
     for (final d in widget.detections) {
       final conf = (d['confidence'] as num?)?.toDouble() ?? 0.0;
       if (conf < 23.0) continue;
-      final bbox = d['bbox'] as Map<String, dynamic>?;
-      if (bbox == null) continue;
 
-      final rawX0 = (bbox['x0'] as num).toDouble();
-      final rawY0 = (bbox['y0'] as num).toDouble();
-      final rawX1 = (bbox['x1'] as num).toDouble();
-      final rawY1 = (bbox['y1'] as num).toDouble();
+      Uint8List? imageBytes = _decodeProcessedImage(d['processed_image']);
+      bool isProcessed = imageBytes != null;
 
-      final x0 = (rawX0 * scaleX).round().clamp(0, decoded.width - 1);
-      final y0 = (rawY0 * scaleY).round().clamp(0, decoded.height - 1);
-      final x1 = (rawX1 * scaleX).round().clamp(x0 + 1, decoded.width);
-      final y1 = (rawY1 * scaleY).round().clamp(y0 + 1, decoded.height);
-
-      final crop = img.copyCrop(
-        decoded,
-        x: x0,
-        y: y0,
-        width: x1 - x0,
-        height: y1 - y0,
-      );
+      if (imageBytes == null) {
+        decodedSource ??= img.decodeImage(widget.sourceImage);
+        if (decodedSource != null) {
+          imageBytes = _cropRawGlyph(decodedSource, d['bbox']);
+        }
+      }
+      if (imageBytes == null) continue;
 
       results.add(_CharacterResult(
-        image: Uint8List.fromList(img.encodePng(crop)),
+        image: imageBytes,
         char: d['char']?.toString() ?? '?',
         confidence: conf,
+        isProcessed: isProcessed,
       ));
     }
     return results;
+  }
+
+  Uint8List? _decodeProcessedImage(dynamic value) {
+    if (value is! String || value.isEmpty) return null;
+    try {
+      return base64Decode(value);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Fallback only: crops the glyph out of the raw photo by its bbox.
+  Uint8List? _cropRawGlyph(img.Image decoded, dynamic bboxValue) {
+    final bbox = bboxValue as Map<String, dynamic>?;
+    if (bbox == null) return null;
+
+    final double scaleX = widget.imageWidth > 0 ? decoded.width / widget.imageWidth : 1.0;
+    final double scaleY = widget.imageHeight > 0 ? decoded.height / widget.imageHeight : 1.0;
+
+    final x0 = ((bbox['x0'] as num).toDouble() * scaleX).round().clamp(0, decoded.width - 1);
+    final y0 = ((bbox['y0'] as num).toDouble() * scaleY).round().clamp(0, decoded.height - 1);
+    final x1 = ((bbox['x1'] as num).toDouble() * scaleX).round().clamp(x0 + 1, decoded.width);
+    final y1 = ((bbox['y1'] as num).toDouble() * scaleY).round().clamp(y0 + 1, decoded.height);
+
+    final crop = img.copyCrop(decoded, x: x0, y: y0, width: x1 - x0, height: y1 - y0);
+    return Uint8List.fromList(img.encodePng(crop));
   }
 
   Color _confidenceColor(double conf) {
@@ -227,7 +230,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
             Padding(
               padding: EdgeInsets.symmetric(vertical: 10),
               child: Center(
-                child: Text('Captured Character', style: TextStyle(fontWeight: FontWeight.bold)),
+                child: Text('Processed Character', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
             Padding(
@@ -246,7 +249,17 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                 child: Center(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(result.image, height: 56, width: 56, fit: BoxFit.contain),
+                    child: Image.memory(
+                      result.image,
+                      height: 72,
+                      width: 72,
+                      fit: BoxFit.contain,
+                      // Processed glyphs are tiny (56x56): scale them up
+                      // with sharp pixels instead of a blurry smear.
+                      filterQuality:
+                          result.isProcessed ? FilterQuality.none : FilterQuality.medium,
+                      gaplessPlayback: true,
+                    ),
                   ),
                 ),
               ),
@@ -284,6 +297,12 @@ class _CharacterResult {
   final Uint8List image;
   final String char;
   final double confidence;
+  final bool isProcessed;
 
-  _CharacterResult({required this.image, required this.char, required this.confidence});
+  _CharacterResult({
+    required this.image,
+    required this.char,
+    required this.confidence,
+    this.isProcessed = false,
+  });
 }

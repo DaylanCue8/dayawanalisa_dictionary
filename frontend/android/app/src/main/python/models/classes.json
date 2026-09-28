@@ -1,0 +1,26 @@
+{
+  "base_classes": [
+    "A",
+    "Ba",
+    "Da",
+    "EI",
+    "Ga",
+    "Ha",
+    "Ka",
+    "La",
+    "Ma",
+    "Na",
+    "Nga",
+    "OU",
+    "Pa",
+    "Sa",
+    "Ta",
+    "Wa",
+    "Ya"
+  ],
+  "dia_classes": [
+    "Cross",
+    "Dot",
+    "X"
+  ]
+}

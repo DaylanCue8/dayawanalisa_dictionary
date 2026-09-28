@@ -21,6 +21,11 @@ import 'package:sensors_plus/sensors_plus.dart';
 /// a photo that's too blurry to read reliably prompts a retake dialog
 /// instead of being handed off as a usable result.
 ///
+/// The user can choose a flash mode (off / auto / on / torch). The
+/// chosen mode applies to EVERY capture - both the manual shutter
+/// button and stability-based auto-capture - since both go through
+/// the same _capture() -> takePicture() call.
+///
 /// Returns the captured, cropped JPEG bytes via Navigator.pop, or null
 /// if the user backs out without capturing.
 class CameraCaptureScreen extends StatefulWidget {
@@ -43,6 +48,26 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   // it to what the box outlined.
   static const double _guideWidthFactor = 0.85;
   static const double _guideHeightFactor = 0.5;
+
+  // ---- Flash ----
+  // Tapping the flash button cycles through these modes in order:
+  //   off    - never fire the flash
+  //   auto   - the camera decides based on the light level
+  //   always - fire the flash on every capture
+  //   torch  - keep the light ON continuously, so the user can see the
+  //            lit page in the preview before capturing (often the best
+  //            choice for a document in a dim room - fewer surprises
+  //            than a flash that only fires at the last instant)
+  // Starts OFF: a flash on paper can create glare/hot spots that wash
+  // out thin pen strokes, so it should be the user's choice.
+  static const List<FlashMode> _flashModeCycle = [
+    FlashMode.off,
+    FlashMode.auto,
+    FlashMode.always,
+    FlashMode.torch,
+  ];
+  FlashMode _flashMode = FlashMode.off;
+  bool _flashSupported = true;
 
   // ---- Blur detection ----
   // STARTING ESTIMATE - not yet calibrated. Take several genuinely
@@ -100,10 +125,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         orElse: () => cameras.first,
       );
 
-      // veryHigh gives strong detail for thin strokes without the
-      // file-size/processing cost of forcing the absolute sensor max.
-      // Bump to ResolutionPreset.max if strokes are still breaking up
-      // in the backend pipeline after testing this.
+      // max gives the most pixels per letter, which matters most when
+      // the page is photographed from further away (thin strokes and
+      // small kudlit marks survive thresholding better).
       final controller = CameraController(
         backCamera,
         ResolutionPreset.max,
@@ -120,11 +144,81 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
           // Some devices/plugin versions don't support manual focus
           // mode changes - safe to ignore, autofocus still runs.
         }
+        // Apply the starting flash mode. If the device has no flash
+        // (or the plugin refuses), hide the flash button entirely.
+        try {
+          await controller.setFlashMode(_flashMode);
+        } catch (_) {
+          _flashSupported = false;
+        }
         if (mounted) setState(() {});
       });
       setState(() {});
     } catch (e) {
       setState(() => _error = 'Failed to start camera: $e');
+    }
+  }
+
+  /// Cycles to the next flash mode and applies it to the camera.
+  /// Works the same whether auto-capture is on or off.
+  Future<void> _cycleFlashMode() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final currentIndex = _flashModeCycle.indexOf(_flashMode);
+    final nextMode = _flashModeCycle[(currentIndex + 1) % _flashModeCycle.length];
+
+    try {
+      await controller.setFlashMode(nextMode);
+      if (!mounted) return;
+      setState(() => _flashMode = nextMode);
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Flash: ${_flashLabel(nextMode)}'),
+            duration: const Duration(milliseconds: 900),
+          ),
+        );
+    } catch (_) {
+      // This particular mode isn't supported on this device (torch is
+      // the most common one missing). Skip past it on the next tap.
+      if (!mounted) return;
+      setState(() => _flashMode = nextMode);
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Flash "${_flashLabel(nextMode)}" is not supported on this device'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+    }
+  }
+
+  IconData _flashIcon(FlashMode mode) {
+    switch (mode) {
+      case FlashMode.off:
+        return Icons.flash_off;
+      case FlashMode.auto:
+        return Icons.flash_auto;
+      case FlashMode.always:
+        return Icons.flash_on;
+      case FlashMode.torch:
+        return Icons.highlight;
+    }
+  }
+
+  String _flashLabel(FlashMode mode) {
+    switch (mode) {
+      case FlashMode.off:
+        return 'Off';
+      case FlashMode.auto:
+        return 'Auto';
+      case FlashMode.always:
+        return 'On';
+      case FlashMode.torch:
+        return 'Light (always on)';
     }
   }
 
@@ -265,6 +359,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
 
     setState(() => _isCapturing = true);
     try {
+      // takePicture() uses whatever flash mode is currently set, so the
+      // user's flash choice applies to manual AND auto-capture alike.
       final XFile file = await controller.takePicture();
       final rawBytes = await file.readAsBytes();
 
@@ -328,7 +424,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   @override
   void dispose() {
     _accelSubscription?.cancel();
-    _controller?.dispose();
+    // Make sure the torch doesn't stay on after leaving the screen.
+    final controller = _controller;
+    if (controller != null && controller.value.isInitialized && _flashMode == FlashMode.torch) {
+      controller.setFlashMode(FlashMode.off).catchError((_) {});
+    }
+    controller?.dispose();
     super.dispose();
   }
 
@@ -360,6 +461,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     }
 
     final isSteady = _stabilityPercent >= _autoCaptureThreshold;
+    final flashIsActive = _flashMode != FlashMode.off;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -421,25 +523,44 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                         onPressed: () => Navigator.of(context).pop(),
                       ),
                     ),
-                    // Toggle for auto-capture, in case a user prefers
-                    // to always capture manually.
+                    // Top-right controls: flash (always available) and
+                    // auto-capture toggle. They are independent - the
+                    // flash choice applies to every capture, manual or
+                    // automatic.
                     Positioned(
                       top: 8,
                       right: 8,
-                      child: IconButton(
-                        icon: Icon(
-                          _autoCaptureEnabled ? Icons.bolt : Icons.bolt_outlined,
-                          color: _autoCaptureEnabled ? Colors.greenAccent : Colors.white70,
-                          size: 28,
-                        ),
-                        tooltip: _autoCaptureEnabled ? 'Auto-capture on' : 'Auto-capture off',
-                        onPressed: () {
-                          setState(() {
-                            _autoCaptureEnabled = !_autoCaptureEnabled;
-                            _stableSince = null;
-                            _autoCaptureFired = false;
-                          });
-                        },
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_flashSupported)
+                            IconButton(
+                              icon: Icon(
+                                _flashIcon(_flashMode),
+                                color: flashIsActive ? Colors.yellowAccent : Colors.white70,
+                                size: 28,
+                              ),
+                              tooltip: 'Flash: ${_flashLabel(_flashMode)}',
+                              onPressed: _isCapturing ? null : _cycleFlashMode,
+                            ),
+                          // Toggle for auto-capture, in case a user
+                          // prefers to always capture manually.
+                          IconButton(
+                            icon: Icon(
+                              _autoCaptureEnabled ? Icons.bolt : Icons.bolt_outlined,
+                              color: _autoCaptureEnabled ? Colors.greenAccent : Colors.white70,
+                              size: 28,
+                            ),
+                            tooltip: _autoCaptureEnabled ? 'Auto-capture on' : 'Auto-capture off',
+                            onPressed: () {
+                              setState(() {
+                                _autoCaptureEnabled = !_autoCaptureEnabled;
+                                _stableSince = null;
+                                _autoCaptureFired = false;
+                              });
+                            },
+                          ),
+                        ],
                       ),
                     ),
                     Positioned(
