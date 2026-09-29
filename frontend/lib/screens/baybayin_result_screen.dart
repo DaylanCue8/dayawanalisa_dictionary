@@ -1,8 +1,13 @@
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+
+import '../services/app_settings.dart';
+import '../widgets/glass.dart';
+import '../widgets/liquid_glass_selector.dart';
 
 /// Full-screen results view for the Baybayin-to-Latin flow, reached after
 /// a successful translate call. Shows the predicted output, a copy
@@ -37,73 +42,125 @@ class BaybayinResultScreen extends StatefulWidget {
 }
 
 class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
-  late final List<_CharacterResult> _characterResults;
+  static const String _rawFilter = 'Raw';
+  static const String _blackWhiteFilter = 'Black and White';
+  static const String _hogFilter = 'HOG';
+
+  // Starting filter / bounding boxes / confidence cut-off come from Settings.
+  String _selectedFilter = _filters.contains(AppSettings.instance.resultFilter)
+      ? AppSettings.instance.resultFilter
+      : _hogFilter;
+  bool _showBoundingBoxes = AppSettings.instance.showBoundingBoxesByDefault;
+  final double _minConfidence = AppSettings.instance.minConfidence;
+  List<_LineResult> _lineResults = const [];
+
+  // Filtered versions of the full source image, keyed by filter. Built
+  // in a background isolate the first time each filter is selected.
+  final Map<String, Uint8List> _filteredSourceImages = {};
+  final Set<String> _pendingFilters = {};
+
+  // Pinch-to-zoom on the source image. While zoomed in, the page stops
+  // scrolling so one-finger drags pan the image instead.
+  final TransformationController _zoomController = TransformationController();
+  bool _isZoomed = false;
 
   @override
   void initState() {
     super.initState();
-    _characterResults = _buildCharacterResults();
-  }
-
-  /// Builds one table row per detection. Uses the backend's processed
-  /// glyph ('processed_image', a base64 PNG - white ink on black, 56x56,
-  /// the same image the model saw). Only if that's missing does it fall
-  /// back to cropping the raw photo by bbox.
-  /// Mirrors the >=23% confidence floor used elsewhere in the app so
-  /// stray low-confidence noise doesn't clutter the breakdown.
-  List<_CharacterResult> _buildCharacterResults() {
-    final results = <_CharacterResult>[];
-    img.Image? decodedSource; // decoded lazily, only if a fallback is needed
-
-    for (final d in widget.detections) {
-      final conf = (d['confidence'] as num?)?.toDouble() ?? 0.0;
-      if (conf < 23.0) continue;
-
-      Uint8List? imageBytes = _decodeProcessedImage(d['processed_image']);
-      bool isProcessed = imageBytes != null;
-
-      if (imageBytes == null) {
-        decodedSource ??= img.decodeImage(widget.sourceImage);
-        if (decodedSource != null) {
-          imageBytes = _cropRawGlyph(decodedSource, d['bbox']);
-        }
-      }
-      if (imageBytes == null) continue;
-
-      results.add(_CharacterResult(
-        image: imageBytes,
-        char: d['char']?.toString() ?? '?',
-        confidence: conf,
-        isProcessed: isProcessed,
-      ));
+    // The HOG view only base64-decodes the backend's crops, which is cheap
+    // enough to do right away so the breakdown shows instantly. Raw /
+    // Black and White decode the whole photo, so they load in the
+    // background instead of stalling the page's slide-in.
+    if (_selectedFilter == _hogFilter) {
+      _lineResults = _buildLineResults(_lineResultsRequest(_selectedFilter));
+      _lineResultsByFilter[_selectedFilter] = _lineResults;
+    } else {
+      _loadLineResults(_selectedFilter);
     }
-    return results;
+    _loadFilteredSourceImage(_selectedFilter);
+    _zoomController.addListener(_onZoomChanged);
+    _chartZoomController.addListener(_onChartZoomChanged);
   }
 
-  Uint8List? _decodeProcessedImage(dynamic value) {
-    if (value is! String || value.isEmpty) return null;
-    try {
-      return base64Decode(value);
-    } catch (_) {
-      return null;
+  @override
+  void dispose() {
+    _zoomController.dispose();
+    _chartZoomController.dispose();
+    super.dispose();
+  }
+
+  void _onZoomChanged() {
+    final zoomed = _zoomController.value.getMaxScaleOnAxis() > 1.01;
+    if (zoomed != _isZoomed) setState(() => _isZoomed = zoomed);
+  }
+
+  void _resetZoom() => _zoomController.value = Matrix4.identity();
+
+  int _imagePointers = 0;
+
+  void _updateImagePointers(int delta) {
+    final wasPinching = _imagePointers >= 2;
+    _imagePointers = math.max(0, _imagePointers + delta);
+    if ((_imagePointers >= 2) != wasPinching) setState(() {});
+  }
+
+  bool get _lockPageScroll =>
+      _isZoomed || _isChartZoomed || _imagePointers >= 2;
+
+  // Which character's Latin letter has the reference chart open, if any.
+  ({int line, int index})? _chartOpenFor;
+  final TransformationController _chartZoomController =
+      TransformationController();
+  bool _isChartZoomed = false;
+
+  void _onChartZoomChanged() {
+    final zoomed = _chartZoomController.value.getMaxScaleOnAxis() > 1.01;
+    if (zoomed != _isChartZoomed) setState(() => _isChartZoomed = zoomed);
+  }
+
+  Future<void> _loadFilteredSourceImage(String filter) async {
+    if (filter == _rawFilter ||
+        _filteredSourceImages.containsKey(filter) ||
+        !_pendingFilters.add(filter)) {
+      return;
     }
+
+    final bytes = await compute(
+      filter == _hogFilter ? _hogVisualizationPng : _blackAndWhitePng,
+      widget.sourceImage,
+    );
+    if (!mounted) return;
+    setState(() {
+      _pendingFilters.remove(filter);
+      _filteredSourceImages[filter] = bytes;
+    });
   }
 
-  /// Fallback only: crops the glyph out of the raw photo by its bbox.
-  Uint8List? _cropRawGlyph(img.Image decoded, dynamic bboxValue) {
-    final bbox = bboxValue as Map<String, dynamic>?;
-    if (bbox == null) return null;
+  _LineResultsRequest _lineResultsRequest(String filter) => _LineResultsRequest(
+    detections: widget.detections,
+    sourceImage: widget.sourceImage,
+    imageWidth: widget.imageWidth,
+    imageHeight: widget.imageHeight,
+    filter: filter,
+    minConfidence: _minConfidence,
+  );
 
-    final double scaleX = widget.imageWidth > 0 ? decoded.width / widget.imageWidth : 1.0;
-    final double scaleY = widget.imageHeight > 0 ? decoded.height / widget.imageHeight : 1.0;
+  // Character crops per filter. Raw / Black and White have to decode the
+  // whole photo, which would freeze the UI (and the filter pill's
+  // animation), so those are built in a background isolate and cached.
+  final Map<String, List<_LineResult>> _lineResultsByFilter = {};
 
-    final x0 = ((bbox['x0'] as num).toDouble() * scaleX).round().clamp(0, decoded.width - 1);
-    final y0 = ((bbox['y0'] as num).toDouble() * scaleY).round().clamp(0, decoded.height - 1);
-    final x1 = ((bbox['x1'] as num).toDouble() * scaleX).round().clamp(x0 + 1, decoded.width);
-    final y1 = ((bbox['y1'] as num).toDouble() * scaleY).round().clamp(y0 + 1, decoded.height);
-
-    final crop = img.copyCrop(decoded, x: x0, y: y0, width: x1 - x0, height: y1 - y0);
-    return Uint8List.fromList(img.encodePng(crop));
+  Future<void> _loadLineResults(String filter) async {
+    final cached = _lineResultsByFilter[filter];
+    if (cached != null) {
+      setState(() => _lineResults = cached);
+      return;
+    }
+    final lines = await compute(_buildLineResults, _lineResultsRequest(filter));
+    if (!mounted) return;
+    _lineResultsByFilter[filter] = lines;
+    // Only show it if the user hasn't moved on to another filter meanwhile.
+    if (filter == _selectedFilter) setState(() => _lineResults = lines);
   }
 
   Color _confidenceColor(double conf) {
@@ -125,22 +182,60 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Content scrolls underneath the frosted app bar, so the scroll view
+    // starts its padding below the status bar + toolbar.
+    final topInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Colors.transparent,
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('Translation Result'),
-        backgroundColor: Colors.white,
+        title: const SizedBox.shrink(),
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
         foregroundColor: Colors.brown,
         elevation: 0,
+        scrolledUnderElevation: 0,
+        flexibleSpace: const GlassBar(child: SizedBox.expand()),
+        leading: IconButton(
+          tooltip: 'Back',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        actions: [
+          TextButton.icon(
+            onPressed: () {},
+            icon: const Icon(Icons.ios_share_outlined),
+            label: const Text('Export'),
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
-      body: SafeArea(
+      body: GlassBackground(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          physics: _lockPageScroll
+              ? const NeverScrollableScrollPhysics()
+              : null,
+          padding: EdgeInsets.fromLTRB(
+            20,
+            topInset + 16,
+            20,
+            20 + MediaQuery.paddingOf(context).bottom,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _buildOriginalImageCard(),
+              const SizedBox(height: 10),
+              _buildFilterOptions(),
               const SizedBox(height: 24),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Results',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+              ),
+              const SizedBox(height: 8),
               _buildPredictedOutputCard(),
               const SizedBox(height: 24),
               const Text(
@@ -150,6 +245,11 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               const SizedBox(height: 12),
               _buildCharacterTable(),
               const SizedBox(height: 20),
+              const Text(
+                '© 2026 DAYAW. All rights reserved.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+              ),
             ],
           ),
         ),
@@ -158,34 +258,219 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   }
 
   Widget _buildOriginalImageCard() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F5F5),
-          border: Border.all(color: Colors.brown.withOpacity(0.2)),
-        ),
+    return GlassContainer(
+      padding: const EdgeInsets.all(6),
+      child: ConstrainedBox(
         constraints: const BoxConstraints(maxHeight: 320),
-        child: Image.memory(widget.sourceImage, fit: BoxFit.contain),
+        // Counting fingers on the image lets the page scroll be locked the
+        // moment a second finger lands, before the scroll view can claim
+        // the gesture and swallow the pinch.
+        child: Listener(
+          onPointerDown: (_) => _updateImagePointers(1),
+          onPointerUp: (_) => _updateImagePointers(-1),
+          onPointerCancel: (_) => _updateImagePointers(-1),
+          child: GestureDetector(
+            onDoubleTap: _resetZoom,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: InteractiveViewer(
+                transformationController: _zoomController,
+                minScale: 1,
+                maxScale: 8,
+                child: _buildImageWithBoxes(),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildPredictedOutputCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
+  Widget _buildBoundingBoxToggle() {
+    return AnimatedContainer(
+      duration: _uiAnimationDuration,
+      curve: Curves.easeOutCubic,
+      width: 40,
+      height: 40,
       decoration: BoxDecoration(
-        color: Colors.brown.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.brown.withOpacity(0.2)),
+        color: _showBoundingBoxes ? _accentColor : Colors.black54,
+        shape: BoxShape.circle,
       ),
+      child: IconButton(
+        tooltip: _showBoundingBoxes
+            ? 'Hide bounding boxes'
+            : 'Show bounding boxes',
+        padding: EdgeInsets.zero,
+        style: ButtonStyle(
+          overlayColor: WidgetStatePropertyAll(
+            _accentColor.withValues(alpha: 0.3),
+          ),
+        ),
+        icon: Icon(
+          Icons.crop_free,
+          size: 20,
+          color: _showBoundingBoxes ? Colors.black87 : Colors.white,
+        ),
+        onPressed: () =>
+            setState(() => _showBoundingBoxes = !_showBoundingBoxes),
+      ),
+    );
+  }
+
+  Widget _buildImageWithBoxes() {
+    // Until the filtered version is ready, the raw image stays visible.
+    final displayBytes =
+        _filteredSourceImages[_selectedFilter] ?? widget.sourceImage;
+    final isLoading = _pendingFilters.contains(_selectedFilter);
+
+    Widget sourceImage(BoxFit fit) => Stack(
+      fit: StackFit.passthrough,
+      children: [
+        // Cross-fades between Raw / Black and White / HOG.
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          child: Image.memory(
+            displayBytes,
+            key: ValueKey(identityHashCode(displayBytes)),
+            fit: fit,
+            cacheWidth: 1600,
+            cacheHeight: 1600,
+            gaplessPlayback: true,
+          ),
+        ),
+        if (isLoading)
+          const Positioned.fill(
+            child: Center(
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  color: Colors.brown,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+    if (widget.imageWidth <= 0 || widget.imageHeight <= 0) {
+      return sourceImage(BoxFit.contain);
+    }
+
+    final boxes = <_BoundingBox>[];
+    for (final d in widget.detections) {
+      final conf = (d['confidence'] as num?)?.toDouble() ?? 0.0;
+      if (conf < _minConfidence) continue;
+      final bbox = d['bbox'] as Map<String, dynamic>?;
+      if (bbox == null) continue;
+      boxes.add(
+        _BoundingBox(
+          rect: Rect.fromLTRB(
+            (bbox['x0'] as num).toDouble(),
+            (bbox['y0'] as num).toDouble(),
+            (bbox['x1'] as num).toDouble(),
+            (bbox['y1'] as num).toDouble(),
+          ),
+          char: d['char']?.toString() ?? '?',
+          color: _confidenceColor(conf),
+        ),
+      );
+    }
+
+    // Bboxes are in the backend's image space (imageWidth x imageHeight),
+    // so the overlay is laid out at that aspect ratio and scaled to fit.
+    return Center(
+      heightFactor: 1,
+      child: AspectRatio(
+        aspectRatio: widget.imageWidth / widget.imageHeight,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            sourceImage(BoxFit.fill),
+            if (_showBoundingBoxes)
+              CustomPaint(
+                painter: _BoundingBoxPainter(
+                  boxes: boxes,
+                  sourceWidth: widget.imageWidth,
+                  sourceHeight: widget.imageHeight,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Same look as the Marker/Pen switch on the camera screen: a dark
+  // rounded bar holding equal-width segments, the selected one yellow.
+  static const Color _accentColor = Color(0xFFFFFF00);
+  static const Duration _uiAnimationDuration = Duration(milliseconds: 220);
+
+  Widget _buildFilterOptions() {
+    return Row(
+      children: [
+        Expanded(
+          // Dark frosted glass, so the yellow selection still pops.
+          child: GlassContainer(
+            padding: const EdgeInsets.all(3),
+            borderRadius: const BorderRadius.all(Radius.circular(12)),
+            tint: const Color(0x8C000000),
+            child: LiquidGlassSelector(
+              count: _filters.length,
+              selectedIndex: _filters.indexOf(_selectedFilter),
+              onChanged: (i) => _selectFilter(_filters[i]),
+              itemBuilder: (context, i, selectedness) => Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  _filters[i],
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Color.lerp(
+                      Colors.white70,
+                      Colors.black87,
+                      selectedness,
+                    ),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (widget.imageWidth > 0 && widget.imageHeight > 0) ...[
+          const SizedBox(width: 12),
+          _buildBoundingBoxToggle(),
+        ],
+      ],
+    );
+  }
+
+  static const List<String> _filters = [
+    _rawFilter,
+    _blackWhiteFilter,
+    _hogFilter,
+  ];
+
+  void _selectFilter(String filter) {
+    if (filter == _selectedFilter) return;
+    setState(() => _selectedFilter = filter);
+    _loadLineResults(filter);
+    _loadFilteredSourceImage(filter);
+  }
+
+  Widget _buildPredictedOutputCard() {
+    return GlassContainer(
+      padding: const EdgeInsets.all(20),
       child: Row(
         children: [
           Expanded(
             child: Text(
               widget.translatedText.isEmpty ? '—' : widget.translatedText,
               style: const TextStyle(
-                fontSize: 26,
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
                 color: Colors.brown,
               ),
@@ -202,7 +487,24 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   }
 
   Widget _buildCharacterTable() {
-    if (_characterResults.isEmpty) {
+    if (_lineResults.isEmpty &&
+        !_lineResultsByFilter.containsKey(_selectedFilter)) {
+      // Still building this filter's crops in the background.
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: Colors.brown,
+            ),
+          ),
+        ),
+      );
+    }
+    if (_lineResults.isEmpty) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 20),
         child: Center(
@@ -214,83 +516,470 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       );
     }
 
-    return Table(
-      border: TableBorder.all(
-        color: Colors.brown.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      columnWidths: const {
-        0: FlexColumnWidth(1),
-        1: FlexColumnWidth(1),
-      },
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        TableRow(
-          decoration: BoxDecoration(color: Colors.brown.withOpacity(0.08)),
-          children: const [
-            Padding(
-              padding: EdgeInsets.symmetric(vertical: 10),
-              child: Center(
-                child: Text('Processed Character', style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ),
-            Padding(
-              padding: EdgeInsets.symmetric(vertical: 10),
-              child: Center(
-                child: Text('Predicted Character', style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ),
-          ],
-        ),
-        for (final result in _characterResults)
-          TableRow(
+        for (var index = 0; index < _lineResults.length; index++)
+          _buildLineSection(index, _lineResults[index]),
+      ],
+    );
+  }
+
+  Widget _buildLineSection(int lineIndex, _LineResult line) {
+    final chartOpen = _chartOpenFor?.line == lineIndex;
+    return GlassContainer(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      borderRadius: const BorderRadius.all(Radius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Padding(
-                padding: const EdgeInsets.all(10),
-                child: Center(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(
-                      result.image,
-                      height: 72,
-                      width: 72,
-                      fit: BoxFit.contain,
-                      // Processed glyphs are tiny (56x56): scale them up
-                      // with sharp pixels instead of a blurry smear.
-                      filterQuality:
-                          result.isProcessed ? FilterQuality.none : FilterQuality.medium,
-                      gaplessPlayback: true,
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(10),
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
+              _buildVerticalLineLabel(lineIndex + 1),
+              const SizedBox(width: 12),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
                     children: [
-                      Text(
-                        result.char,
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: _confidenceColor(result.confidence),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${result.confidence.toStringAsFixed(0)}%',
-                        style: TextStyle(fontSize: 12, color: _confidenceColor(result.confidence)),
-                      ),
+                      for (var i = 0; i < line.results.length; i++)
+                        _buildCharacterResult(line.results[i], (
+                          line: lineIndex,
+                          index: i,
+                        )),
                     ],
                   ),
                 ),
               ),
             ],
           ),
+          // Chart slides open/closed instead of popping in.
+          AnimatedSize(
+            duration: const Duration(milliseconds: 280),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: chartOpen
+                ? Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: _buildChartPanel(),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleChart(({int line, int index}) key) {
+    setState(() {
+      _chartOpenFor = _chartOpenFor == key ? null : key;
+      _chartZoomController.value = Matrix4.identity();
+    });
+  }
+
+  /// Small zoomable Baybayin reference chart, shown under the line whose
+  /// Latin letter was tapped, to check a prediction against the chart.
+  Widget _buildChartPanel() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        height: 180,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: Colors.brown.withValues(alpha: 0.25)),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Listener(
+          onPointerDown: (_) => _updateImagePointers(1),
+          onPointerUp: (_) => _updateImagePointers(-1),
+          onPointerCancel: (_) => _updateImagePointers(-1),
+          child: GestureDetector(
+            onDoubleTap: () => _chartZoomController.value = Matrix4.identity(),
+            child: InteractiveViewer(
+              transformationController: _chartZoomController,
+              minScale: 1,
+              maxScale: 8,
+              child: Center(
+                child: Image.asset(
+                  'assets/images/baybayin_chart.jpg',
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVerticalLineLabel(int lineNumber) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$lineNumber',
+          style: const TextStyle(
+            fontSize: 28,
+            fontWeight: FontWeight.bold,
+            height: 1,
+          ),
+        ),
+        const Text(
+          'Line',
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+        ),
       ],
     );
   }
+
+  Widget _buildCharacterResult(
+    _CharacterResult result,
+    ({int line, int index}) key,
+  ) {
+    final chartOpen = _chartOpenFor == key;
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.memory(
+                result.image,
+                height: 64,
+                width: 64,
+                fit: BoxFit.contain,
+                filterQuality: result.isProcessed
+                    ? FilterQuality.none
+                    : FilterQuality.medium,
+                gaplessPlayback: true,
+              ),
+            ),
+            VerticalDivider(
+              width: 16,
+              thickness: 1,
+              color: Colors.brown.withValues(alpha: 0.25),
+            ),
+            // Tapping the Latin letter opens the reference chart; tapping
+            // it again closes it.
+            Center(
+              child: InkWell(
+                onTap: () => _toggleChart(key),
+                borderRadius: BorderRadius.circular(8),
+                child: AnimatedContainer(
+                  duration: _uiAnimationDuration,
+                  curve: Curves.easeOutCubic,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: chartOpen
+                        ? _accentColor
+                        : _accentColor.withValues(alpha: 0),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    result.char,
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: _confidenceColor(result.confidence),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LineResultsRequest {
+  final List<Map<String, dynamic>> detections;
+  final Uint8List sourceImage;
+  final double imageWidth;
+  final double imageHeight;
+  final String filter;
+  // Passed in rather than read from AppSettings: a background isolate
+  // has its own fresh copy of AppSettings with only the defaults.
+  final double minConfidence;
+
+  const _LineResultsRequest({
+    required this.detections,
+    required this.sourceImage,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.filter,
+    required this.minConfidence,
+  });
+}
+
+/// Builds the Character Breakdown for one filter: picks each detection's
+/// crop image, then groups the characters into lines (top to bottom) and
+/// sorts each line left to right. Top-level so it can run via compute.
+List<_LineResult> _buildLineResults(_LineResultsRequest request) {
+  const rawFilter = _BaybayinResultScreenState._rawFilter;
+  const blackWhiteFilter = _BaybayinResultScreenState._blackWhiteFilter;
+  const hogFilter = _BaybayinResultScreenState._hogFilter;
+  final filter = request.filter;
+
+  final results = <_CharacterResult>[];
+  img.Image? decodedSource; // decoded lazily, only if a fallback is needed
+
+  for (final d in request.detections) {
+    final conf = (d['confidence'] as num?)?.toDouble() ?? 0.0;
+    if (conf < request.minConfidence) continue;
+
+    final processedImage = _decodeProcessedImage(d['processed_image']);
+    Uint8List? rawImage;
+
+    if (filter == rawFilter || filter == blackWhiteFilter) {
+      decodedSource ??= img.decodeImage(request.sourceImage);
+      if (decodedSource != null) {
+        rawImage = _cropRawGlyph(
+          decodedSource,
+          d['bbox'],
+          request.imageWidth,
+          request.imageHeight,
+        );
+      }
+    }
+    final baseImage = filter == hogFilter
+        ? processedImage ?? rawImage
+        : rawImage ?? processedImage;
+    final imageBytes = filter == blackWhiteFilter && baseImage != null
+        ? _blackAndWhitePng(baseImage)
+        : baseImage;
+    if (imageBytes == null) continue;
+
+    final bbox = d['bbox'] as Map<String, dynamic>?;
+    if (bbox == null) continue;
+
+    results.add(
+      _CharacterResult(
+        image: imageBytes,
+        char: d['char']?.toString() ?? '?',
+        confidence: conf,
+        isProcessed: filter == hogFilter,
+        centerX:
+            ((bbox['x0'] as num).toDouble() + (bbox['x1'] as num).toDouble()) /
+            2,
+        centerY:
+            ((bbox['y0'] as num).toDouble() + (bbox['y1'] as num).toDouble()) /
+            2,
+        height: (bbox['y1'] as num).toDouble() - (bbox['y0'] as num).toDouble(),
+      ),
+    );
+  }
+
+  results.sort((a, b) => a.centerY.compareTo(b.centerY));
+  final lines = <_LineResult>[];
+  for (final result in results) {
+    final currentLine = lines.isEmpty ? null : lines.last;
+    final lineTolerance = currentLine == null
+        ? 0
+        : (currentLine.maxHeight > result.height
+                  ? currentLine.maxHeight
+                  : result.height) *
+              0.7;
+    if (currentLine == null ||
+        (result.centerY - currentLine.centerY).abs() > lineTolerance) {
+      lines.add(
+        _LineResult(
+          results: [result],
+          centerY: result.centerY,
+          maxHeight: result.height,
+        ),
+      );
+    } else {
+      currentLine.results.add(result);
+      currentLine.centerY =
+          currentLine.results
+              .map((item) => item.centerY)
+              .reduce((a, b) => a + b) /
+          currentLine.results.length;
+      if (result.height > currentLine.maxHeight) {
+        currentLine.maxHeight = result.height;
+      }
+    }
+  }
+  for (final line in lines) {
+    line.results.sort((a, b) => a.centerX.compareTo(b.centerX));
+  }
+  return lines;
+}
+
+Uint8List? _decodeProcessedImage(dynamic value) {
+  if (value is! String || value.isEmpty) return null;
+  try {
+    return base64Decode(value);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Fallback only: crops the glyph out of the raw photo by its bbox.
+/// [imageWidth]/[imageHeight] are the backend's coordinate space, which
+/// may differ from the decoded photo's size, so crops are scaled by it.
+Uint8List? _cropRawGlyph(
+  img.Image decoded,
+  dynamic bboxValue,
+  double imageWidth,
+  double imageHeight,
+) {
+  final bbox = bboxValue as Map<String, dynamic>?;
+  if (bbox == null) return null;
+
+  final double scaleX = imageWidth > 0 ? decoded.width / imageWidth : 1.0;
+  final double scaleY = imageHeight > 0 ? decoded.height / imageHeight : 1.0;
+
+  final x0 = ((bbox['x0'] as num).toDouble() * scaleX).round().clamp(
+    0,
+    decoded.width - 1,
+  );
+  final y0 = ((bbox['y0'] as num).toDouble() * scaleY).round().clamp(
+    0,
+    decoded.height - 1,
+  );
+  final x1 = ((bbox['x1'] as num).toDouble() * scaleX).round().clamp(
+    x0 + 1,
+    decoded.width,
+  );
+  final y1 = ((bbox['y1'] as num).toDouble() * scaleY).round().clamp(
+    y0 + 1,
+    decoded.height,
+  );
+
+  final crop = img.copyCrop(
+    decoded,
+    x: x0,
+    y: y0,
+    width: x1 - x0,
+    height: y1 - y0,
+  );
+  return Uint8List.fromList(img.encodePng(crop));
+}
+
+/// Largest side the full source image is shrunk to before filtering, so
+/// big camera photos stay fast to process.
+const int _maxFilterDimension = 1000;
+
+img.Image _downscaleForFilter(img.Image image) {
+  if (image.width <= _maxFilterDimension &&
+      image.height <= _maxFilterDimension) {
+    return image;
+  }
+  return image.width >= image.height
+      ? img.copyResize(image, width: _maxFilterDimension)
+      : img.copyResize(image, height: _maxFilterDimension);
+}
+
+/// Grayscale + threshold + invert: ink becomes white on black. Used for
+/// both the per-character crops and (via compute) the full source image.
+Uint8List _blackAndWhitePng(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) return bytes;
+  return Uint8List.fromList(
+    img.encodePng(
+      img.invert(
+        img.luminanceThreshold(
+          img.grayscale(_downscaleForFilter(decoded)),
+          threshold: 0.65,
+        ),
+      ),
+    ),
+  );
+}
+
+/// Histogram of Oriented Gradients visualization of the full source image,
+/// drawn the way skimage's hog(visualize=True) does: each 8x8 cell gets
+/// one line per orientation bin, running along the edge direction, with
+/// brightness proportional to that bin's gradient strength.
+Uint8List _hogVisualizationPng(Uint8List bytes) {
+  const cellSize = 8;
+  const bins = 9;
+  const binWidth = math.pi / bins;
+
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) return bytes;
+  final gray = img.grayscale(_downscaleForFilter(decoded));
+  final w = gray.width;
+  final h = gray.height;
+
+  final luminance = Float32List(w * h);
+  var i = 0;
+  for (final pixel in gray) {
+    luminance[i++] = pixel.r.toDouble();
+  }
+
+  final cellsX = w ~/ cellSize;
+  final cellsY = h ~/ cellSize;
+  final histogram = Float32List(cellsX * cellsY * bins);
+  for (var y = 1; y < h - 1; y++) {
+    final cy = y ~/ cellSize;
+    if (cy >= cellsY) break;
+    for (var x = 1; x < w - 1; x++) {
+      final cx = x ~/ cellSize;
+      if (cx >= cellsX) break;
+      final gx = luminance[y * w + x + 1] - luminance[y * w + x - 1];
+      final gy = luminance[(y + 1) * w + x] - luminance[(y - 1) * w + x];
+      final magnitude = math.sqrt(gx * gx + gy * gy);
+      if (magnitude == 0) continue;
+      var angle = math.atan2(gy, gx);
+      if (angle < 0) angle += math.pi;
+      final bin = (angle / binWidth).floor() % bins;
+      histogram[(cy * cellsX + cx) * bins + bin] += magnitude;
+    }
+  }
+
+  final output = img.Image(width: w, height: h);
+  var maxValue = 0.0;
+  for (final value in histogram) {
+    if (value > maxValue) maxValue = value;
+  }
+  if (maxValue == 0) return Uint8List.fromList(img.encodePng(output));
+
+  const radius = cellSize / 2 - 0.5;
+  for (var cy = 0; cy < cellsY; cy++) {
+    for (var cx = 0; cx < cellsX; cx++) {
+      final base = (cy * cellsX + cx) * bins;
+      final centerX = cx * cellSize + cellSize / 2;
+      final centerY = cy * cellSize + cellSize / 2;
+      // Weakest bins first so the dominant edge direction ends on top.
+      final order = List<int>.generate(bins, (b) => b)
+        ..sort((a, b) => histogram[base + a].compareTo(histogram[base + b]));
+      for (final b in order) {
+        final strength = histogram[base + b] / maxValue;
+        if (strength < 0.02) continue;
+        // sqrt lifts faint strokes so they stay visible on a phone screen.
+        final shade = (math.sqrt(strength) * 255).round().clamp(0, 255);
+        final edgeAngle = (b + 0.5) * binWidth + math.pi / 2;
+        final dx = math.cos(edgeAngle) * radius;
+        final dy = math.sin(edgeAngle) * radius;
+        img.drawLine(
+          output,
+          x1: (centerX - dx).round(),
+          y1: (centerY - dy).round(),
+          x2: (centerX + dx).round(),
+          y2: (centerY + dy).round(),
+          color: img.ColorRgb8(shade, shade, shade),
+        );
+      }
+    }
+  }
+  return Uint8List.fromList(img.encodePng(output));
 }
 
 class _CharacterResult {
@@ -298,11 +987,102 @@ class _CharacterResult {
   final String char;
   final double confidence;
   final bool isProcessed;
+  final double centerX;
+  final double centerY;
+  final double height;
 
   _CharacterResult({
     required this.image,
     required this.char,
     required this.confidence,
     this.isProcessed = false,
+    required this.centerX,
+    required this.centerY,
+    required this.height,
+  });
+}
+
+class _BoundingBox {
+  final Rect rect;
+  final String char;
+  final Color color;
+
+  _BoundingBox({required this.rect, required this.char, required this.color});
+}
+
+class _BoundingBoxPainter extends CustomPainter {
+  final List<_BoundingBox> boxes;
+  final double sourceWidth;
+  final double sourceHeight;
+
+  _BoundingBoxPainter({
+    required this.boxes,
+    required this.sourceWidth,
+    required this.sourceHeight,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scaleX = size.width / sourceWidth;
+    final scaleY = size.height / sourceHeight;
+
+    for (final box in boxes) {
+      final rect = Rect.fromLTRB(
+        box.rect.left * scaleX,
+        box.rect.top * scaleY,
+        box.rect.right * scaleX,
+        box.rect.bottom * scaleY,
+      );
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..color = box.color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+
+      final label = TextPainter(
+        text: TextSpan(
+          text: box.char,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+
+      // Label sits just above the box, or inside it if there's no room.
+      final labelTop = rect.top - label.height - 2 >= 0
+          ? rect.top - label.height - 2
+          : rect.top;
+      final labelRect = Rect.fromLTWH(
+        rect.left,
+        labelTop,
+        label.width + 6,
+        label.height + 2,
+      );
+      canvas.drawRect(labelRect, Paint()..color = box.color);
+      label.paint(canvas, Offset(labelRect.left + 3, labelRect.top + 1));
+    }
+  }
+
+  @override
+  bool shouldRepaint(_BoundingBoxPainter oldDelegate) =>
+      oldDelegate.boxes != boxes ||
+      oldDelegate.sourceWidth != sourceWidth ||
+      oldDelegate.sourceHeight != sourceHeight;
+}
+
+class _LineResult {
+  final List<_CharacterResult> results;
+  double centerY;
+  double maxHeight;
+
+  _LineResult({
+    required this.results,
+    required this.centerY,
+    required this.maxHeight,
   });
 }

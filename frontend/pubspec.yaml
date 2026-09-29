@@ -19,6 +19,7 @@ dependencies:
   image: ^4.0.17
   camera: ^0.10.5+9
   sensors_plus: ^6.1.1
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:
@@ -39,8 +40,15 @@ flutter:
 
   assets:
     - assets/images/dayawlogo.png
+    - assets/images/baybayin_chart.jpg
 
   fonts:
+    # Cursive font for the intro's handwritten "Dayaw" (SIL Open Font
+    # License - see assets/fonts/GreatVibes-OFL.txt). Bundled, not
+    # downloaded, so it works offline.
+    - family: GreatVibes
+      fonts:
+        - asset: assets/fonts/GreatVibes-Regular.ttf
     - family: BaybayinCustom
       fonts:
         - asset: assets/fonts/baybayin_custom.ttf  # ⚠️ your ttf filename

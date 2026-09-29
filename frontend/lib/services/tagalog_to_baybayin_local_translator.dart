@@ -57,6 +57,19 @@ class TagalogToBaybayinLocalTranslator {
       confidence -= nonNativeMatches.length * 15;
     }
 
+    return {
+      'translated_text': breakdown(originalText).map((t) => t.baybayin).join(),
+      'confidence': confidence < 0 ? 0.0 : confidence,
+    };
+  }
+
+  /// The translation split into its pieces: one entry per syllable (or
+  /// lone consonant / vowel / space / punctuation), each with the Latin
+  /// text it came from and the Baybayin written for it. Joining every
+  /// `baybayin` gives exactly what [translate] returns.
+  List<({String latin, String baybayin})> breakdown(String text) {
+    final originalText = text.toLowerCase().trim();
+    final pieces = <({String latin, String baybayin})>[];
     var workingText = originalText.replaceAll('ng', 'NG');
 
     // 'mga' is pronounced "ma-nga" (ma + nga), NOT "ma-ga". Handled as
@@ -66,89 +79,93 @@ class TagalogToBaybayinLocalTranslator {
       r'(\bmga\b)|(NG[aeiou]|(?:[bkdrghlmnpstwry])?[aeiou])|(NG|[bkdrghlmnpstwry])|([aeiou])|(\s+)|(\.|\,)',
     );
 
-    final buffer = StringBuffer();
     final matches = pattern.allMatches(workingText);
 
     for (final match in matches) {
-      final mgaWord = match.group(1);
-      final cv = match.group(2);
-      final c = match.group(3);
-      final v = match.group(4);
-      final space = match.group(5);
-      final punct = match.group(6);
+      pieces.add((
+        latin: match.group(0)!.replaceAll('NG', 'ng'),
+        baybayin: _pieceFor(match),
+      ));
+    }
 
-      if (mgaWord != null) {
-        buffer.write('${baseMap['ma']}${baseMap['nga']}');
-        continue;
-      }
+    return pieces;
+  }
 
-      if (space != null) {
-        buffer.write(space);
-        continue;
-      }
+  /// The Baybayin for one matched piece of the (NG-marked) input.
+  String _pieceFor(RegExpMatch match) {
+    final mgaWord = match.group(1);
+    final cv = match.group(2);
+    final c = match.group(3);
+    final v = match.group(4);
+    final space = match.group(5);
+    final punct = match.group(6);
 
-      if (punct != null) {
-        if (punct == '.') {
-          buffer.write(doubleDanda);
-        } else if (punct == ',') {
-          buffer.write(danda);
-        }
-        continue;
-      }
+    if (mgaWord != null) {
+      return '${baseMap['ma']}${baseMap['nga']}';
+    }
 
-      final vowelToken = v ??
-          (cv != null && cv.length == 1 && RegExp(r'^[aeiou]$').hasMatch(cv) ? cv : null);
-      if (vowelToken != null) {
-        buffer.write(baseMap[vowelToken] ?? '');
-        continue;
-      }
+    if (space != null) {
+      return space;
+    }
 
-      if (cv != null) {
-        final vowelPart = cv.substring(cv.length - 1);
-        final consPart = cv.substring(0, cv.length - 1);
-
-        String key;
-        if (consPart == 'r') {
-          key = 'ra';
-        } else if (consPart == 'NG') {
-          key = 'nga';
-        } else {
-          key = '${consPart}a';
-        }
-
-        final base = baseMap[key] ?? '';
-
-        if (vowelPart == 'e') {
-          buffer.write(base + kudlitE);
-        } else if (vowelPart == 'i') {
-          buffer.write(base + kudlitI);
-        } else if (vowelPart == 'o') {
-          buffer.write(base + kudlitO);
-        } else if (vowelPart == 'u') {
-          buffer.write(base + kudlitU);
-        } else {
-          buffer.write(base);
-        }
-      } else if (c != null) {
-        String key;
-        if (c == 'r') {
-          key = 'ra';
-        } else if (c == 'NG') {
-          key = 'nga';
-        } else {
-          key = '${c}a';
-        }
-
-        final base = baseMap[key] ?? '';
-        if (base.isNotEmpty) {
-          buffer.write(base + virama);
-        }
+    if (punct != null) {
+      if (punct == '.') {
+        return doubleDanda;
+      } else if (punct == ',') {
+        return danda;
       }
     }
 
-    return {
-      'translated_text': buffer.toString(),
-      'confidence': confidence < 0 ? 0.0 : confidence,
-    };
+    final vowelToken =
+        v ??
+        (cv != null && cv.length == 1 && RegExp(r'^[aeiou]$').hasMatch(cv)
+            ? cv
+            : null);
+    if (vowelToken != null) {
+      return baseMap[vowelToken] ?? '';
+    }
+
+    if (cv != null) {
+      final vowelPart = cv.substring(cv.length - 1);
+      final consPart = cv.substring(0, cv.length - 1);
+
+      String key;
+      if (consPart == 'r') {
+        key = 'ra';
+      } else if (consPart == 'NG') {
+        key = 'nga';
+      } else {
+        key = '${consPart}a';
+      }
+
+      final base = baseMap[key] ?? '';
+
+      if (vowelPart == 'e') {
+        return base + kudlitE;
+      } else if (vowelPart == 'i') {
+        return base + kudlitI;
+      } else if (vowelPart == 'o') {
+        return base + kudlitO;
+      } else if (vowelPart == 'u') {
+        return base + kudlitU;
+      } else {
+        return base;
+      }
+    } else if (c != null) {
+      String key;
+      if (c == 'r') {
+        key = 'ra';
+      } else if (c == 'NG') {
+        key = 'nga';
+      } else {
+        key = '${c}a';
+      }
+
+      final base = baseMap[key] ?? '';
+      if (base.isNotEmpty) {
+        return base + virama;
+      }
+    }
+    return '';
   }
 }

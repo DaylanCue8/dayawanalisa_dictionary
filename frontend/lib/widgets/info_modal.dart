@@ -64,6 +64,8 @@ class InfoModal extends StatelessWidget {
                 'assets/images/how_to_write_baybayin.png',
                 width: double.infinity,
                 fit: BoxFit.contain,
+                // Image not added to assets yet: show nothing, not an error.
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
               ),
             ),
 
@@ -92,6 +94,7 @@ class InfoModal extends StatelessWidget {
                       'assets/images/supported_characters.png',
                       width: double.infinity,
                       fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
                     ),
                   ),
                 ],

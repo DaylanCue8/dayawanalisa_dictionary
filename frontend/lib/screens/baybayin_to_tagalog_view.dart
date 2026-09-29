@@ -1,13 +1,15 @@
+import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show applyBoxFit, FittedSizes;
-import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 import '../services/api_service.dart';
 import '../services/offline_recognizer.dart';
 import '../widgets/image_cropper_widget.dart';
 import '../screens/camera_capture_screen.dart';
 import '../screens/baybayin_result_screen.dart';
+import '../widgets/glass.dart';
 
 /// Handles the "Baybayin to Latin" mode: capture/upload a photo, crop it,
 /// send it for translation, and show the result. Fully self-contained —
@@ -19,19 +21,43 @@ class BaybayinToTagalogView extends StatefulWidget {
   State<BaybayinToTagalogView> createState() => _BaybayinToTagalogViewState();
 }
 
-class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
+class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
+    with SingleTickerProviderStateMixin {
   final ApiService _apiService = ApiService();
-  final ImagePicker _picker = ImagePicker();
 
   // true  = recognize on the phone (offline, Chaquopy - Android only)
   // false = send the photo to the Flask server like before
   static const bool _useOfflineRecognizer = true;
+
+  /// One looping 0..1 clock that drives every ambient animation on this
+  /// tab (glow border, breathing button, radar rings, scan line), so the
+  /// whole screen moves in sync and only one ticker runs.
+  late final AnimationController _ambient = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 3200),
+  )..repeat();
+
+  // "Did you know?" card: rotates to the next fact every few seconds.
+  Timer? _factTimer;
+  int _factIndex = 0;
 
   @override
   void initState() {
     super.initState();
     // Load the models in the background so the first scan isn't slow
     if (_useOfflineRecognizer) OfflineRecognizer.warmUp();
+    _factTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      if (mounted) {
+        setState(() => _factIndex = (_factIndex + 1) % _facts.length);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _factTimer?.cancel();
+    _ambient.dispose();
+    super.dispose();
   }
 
   String _translatedResult = "Result will appear here";
@@ -53,13 +79,6 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   Offset? _swipeStart;
   Offset? _tabSwipeStart;
   static const double _swipeMinDistance = 60; // logical pixels
-
-  // Which writing-instrument preset the backend should use for
-  // stroke-gap / diacritic thresholds. 'marker' covers both thick
-  // marker and pentel/felt-tip pens (they share the same tuned
-  // thresholds); 'pen' is for thin ballpoint/gel ink, which needs an
-  // adaptive, stroke-thickness-scaled gap threshold instead.
-  String _inputType = 'marker';
 
   /// Bakes the EXIF orientation into the actual pixel data (rotating/
   /// flipping as needed) and strips the orientation tag, producing a
@@ -88,7 +107,10 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     return Uint8List.fromList(img.encodeJpg(oriented, quality: 95));
   }
 
-  Future<void> _processCroppedImage(Uint8List imageBytes) async {
+  Future<void> _processCroppedImage(
+    Uint8List imageBytes, {
+    required String inputType,
+  }) async {
     setState(() {
       _isLoading = true;
       _translatedResult = 'Processing Image...';
@@ -97,12 +119,12 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     });
 
     final response = _useOfflineRecognizer
-        ? await OfflineRecognizer.recognize(imageBytes, inputType: _inputType)
+        ? await OfflineRecognizer.recognize(imageBytes, inputType: inputType)
         : await _apiService.uploadAndTranslateDetailed(
             null,
             'Baybayin to Tagalog',
             imageBytes: imageBytes,
-            inputType: _inputType,
+            inputType: inputType,
           );
 
     if (!mounted) return;
@@ -126,7 +148,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
         // LOW_RESOLUTION_WARNING_THRESHOLD_PX in the backend) - a
         // resolution issue with THIS photo, not a translation error,
         // so it's shown alongside the result rather than replacing it.
-        final lowResolutionWarning = response['low_resolution_warning'] as String?;
+        final lowResolutionWarning =
+            response['low_resolution_warning'] as String?;
         if (lowResolutionWarning != null && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -154,10 +177,12 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     });
   }
 
-  /// Shared pipeline for BOTH capture sources: normalize orientation,
-  /// let the user crop, then upload. Gallery and camera only differ in
-  /// how they obtain rawBytes before reaching this point.
-  Future<void> _handleRawImage(Uint8List rawBytes) async {
+  /// Shared camera pipeline: normalize orientation, let the user crop, then
+  /// run the offline recognizer.
+  Future<void> _handleRawImage(
+    Uint8List rawBytes, {
+    required String inputType,
+  }) async {
     if (!mounted) return;
 
     // Normalize orientation BEFORE cropping, so the crop UI itself
@@ -166,9 +191,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     final bytes = _normalizeOrientation(rawBytes);
 
     final Uint8List? croppedBytes = await Navigator.of(context).push<Uint8List>(
-      MaterialPageRoute(
-        builder: (_) => ImageCropperScreen(imageData: bytes),
-      ),
+      MaterialPageRoute(builder: (_) => ImageCropperScreen(imageData: bytes)),
     );
 
     if (croppedBytes == null) return;
@@ -183,119 +206,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
       _webImage = croppedBytes;
     });
 
-    await _processCroppedImage(croppedBytes);
-  }
-
-  // ---- Blur detection (gallery path) ----
-  // Mirrors camera_capture_screen.dart's _computeBlurScore exactly -
-  // same Laplacian-variance metric, same threshold - so a gallery photo
-  // gets the same immediate "too blurry, try again" feedback a camera
-  // capture already gets, instead of only finding out after a full
-  // upload round-trip to the backend's own blur check. This can't fix
-  // a gallery photo's actual resolution or focus (those are baked into
-  // the file already), but it DOES catch true blur (motion/focus
-  // softness) before wasting time uploading it.
-  static const double _galleryBlurVarianceThreshold = 60.0;
-
-  double _computeBlurScore(img.Image image) {
-    final resized = img.copyResize(image, width: 600);
-    final gray = img.grayscale(resized);
-    final width = gray.width;
-    final height = gray.height;
-
-    double sum = 0.0;
-    double sumSq = 0.0;
-    int count = 0;
-
-    int luminanceAt(int x, int y) => gray.getPixel(x, y).r.toInt();
-
-    for (int y = 1; y < height - 1; y++) {
-      for (int x = 1; x < width - 1; x++) {
-        final laplacian = -4 * luminanceAt(x, y)
-            + luminanceAt(x - 1, y) + luminanceAt(x + 1, y)
-            + luminanceAt(x, y - 1) + luminanceAt(x, y + 1);
-        sum += laplacian;
-        sumSq += laplacian * laplacian;
-        count++;
-      }
-    }
-
-    if (count == 0) return 0.0;
-    final mean = sum / count;
-    return (sumSq / count) - (mean * mean);
-  }
-
-  Future<bool> _confirmRetakeIfBlurry(Uint8List bytes) async {
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) return false;
-
-    final blurScore = _computeBlurScore(decoded);
-    if (blurScore >= _galleryBlurVarianceThreshold) return false;
-
-    if (!mounted) return true;
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Photo is too blurry'),
-        content: const Text(
-          'This photo looks blurry, which will make the handwriting '
-          'hard to read correctly. Try picking a sharper photo, or use '
-          'the in-app camera instead for a steadier, higher-resolution '
-          'capture.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-    return true;
-  }
-
-  Future<void> _uploadFromGallery() async {
-    // Gallery photos come from whatever camera app originally took
-    // them - unlike CameraCaptureScreen, this app has no control over
-    // the resolution or focus that photo was captured at, which can't
-    // be fixed after the fact (see _confirmRetakeIfBlurry's own note
-    // on this). Shown as a brief, non-blocking notice rather than a
-    // dialog the person has to dismiss - it informs the choice without
-    // getting in the way of it, since gallery upload is still a fully
-    // legitimate option for a photo taken earlier or shared by someone
-    // else.
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Tip: the in-app Camera locks focus and resolution for '
-            'more reliable results. Gallery works too, but results can '
-            'vary depending on how the photo was originally taken.',
-          ),
-          duration: Duration(seconds: 4),
-        ),
-      );
-    }
-
-    final XFile? photo = await _picker.pickImage(
-      source: ImageSource.gallery,
-      // No imageQuality / maxWidth / maxHeight: those silently
-      // downscale and re-compress the file before it ever reaches the
-      // app, which is exactly what breaks thin strokes. Keep the
-      // gallery file at its native resolution and quality.
-    );
-    if (photo == null) return;
-
-    final rawBytes = await photo.readAsBytes();
-
-    // Checked BEFORE _handleRawImage (orientation-normalize -> crop ->
-    // upload), so a blurry pick is caught immediately rather than
-    // after the person has already gone through cropping and waited
-    // for an upload, only for the backend to reject it.
-    final isBlurry = await _confirmRetakeIfBlurry(rawBytes);
-    if (isBlurry) return;
-
-    await _handleRawImage(rawBytes);
+    await _processCroppedImage(croppedBytes, inputType: inputType);
   }
 
   /// Now uses the custom CameraCaptureScreen (camera package) instead
@@ -303,12 +214,13 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   /// preset and lock focus/exposure before capture - neither of which
   /// the OS camera app exposes to us.
   Future<void> _captureFromCamera() async {
-    final Uint8List? captured = await Navigator.of(context).push<Uint8List>(
-      MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
-    );
+    final CameraCaptureResult? captured = await Navigator.of(context)
+        .push<CameraCaptureResult>(
+          MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
+        );
     if (captured == null) return;
 
-    await _handleRawImage(captured);
+    await _handleRawImage(captured.imageBytes, inputType: captured.inputType);
   }
 
   /// Opens the result screen again for the last photo (if there is one).
@@ -321,16 +233,11 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
 
   void _showResults(Uint8List sourceImage, Map<String, dynamic> data) {
     Navigator.of(context).push(
-      // Slides in from the right, so it matches the swipe gesture
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 300),
-        reverseTransitionDuration: const Duration(milliseconds: 250),
-        transitionsBuilder: (_, animation, __, child) => SlideTransition(
-          position: Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
-              .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
-          child: child,
-        ),
-        pageBuilder: (_, __, ___) => BaybayinResultScreen(
+      // The app theme gives every MaterialPageRoute the iOS transition:
+      // slides in from the right (matching the swipe gesture), with
+      // parallax on the page underneath and swipe-back to close.
+      MaterialPageRoute(
+        builder: (_) => BaybayinResultScreen(
           sourceImage: sourceImage,
           translatedText: data['translated_text']?.toString() ?? '',
           detections: (data['individual_detections'] as List? ?? [])
@@ -352,8 +259,376 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     );
   }
 
+  // ---------------------------------------------------------------------
+  // UI
+  //
+  // A layered, always-moving "scanner hub": animated glowing hero card,
+  // breathing call-to-action, a rich result card, scan tips and rotating
+  // Baybayin facts. Dense and lively on purpose, but every piece is
+  // either an action, the result, or something that helps the next scan.
+  // ---------------------------------------------------------------------
+
+  static const Color _amber = Color(0xFFFFB300);
+  static const Color _gold = Color(0xFFFFFF00);
+  // Rich lemon yellow - the lead accent. Gradients run amber -> _yellow ->
+  // _gold so they stay warm but read as clearly yellow.
+  static const Color _yellow = Color(0xFFFFE000);
+  static const Color _deepBrown = Color(0xFF4E342E);
+
+  static const List<(IconData, Color, String)> _tips = [
+    (Icons.edit, Color(0xFF263238), 'Black ink'),
+    (Icons.description_outlined, Color(0xFF5C6BC0), 'Plain white paper'),
+    (Icons.space_bar, Color(0xFF26A69A), 'Space out letters'),
+    (Icons.more_horiz, Color(0xFFEF6C00), 'Clear kudlits'),
+    (Icons.wb_sunny_outlined, Color(0xFFF9A825), 'No glare or shadow'),
+    (Icons.crop_free, Color(0xFF8E24AA), 'Fill the frame'),
+  ];
+
+  static const List<(String, String)> _facts = [
+    (
+      'ᜊᜌ᜔ᜊᜌᜒᜈ᜔',
+      '"Baybayin" comes from "baybay", the Tagalog word for "to spell".',
+    ),
+    (
+      'ᜃ ᜃᜒ ᜃᜓ',
+      'A kudlit above a letter turns its "a" into "e/i"; below, into "o/u".',
+    ),
+    ('ᜃ᜔', 'The cross-shaped kudlit, added in 1620, removes the vowel sound.'),
+    ('ᜇ', 'D and R share one letter in Baybayin - context tells them apart.'),
+    ('ᜀ ᜁ ᜂ', 'Baybayin has 17 basic letters: 3 vowels and 14 consonants.'),
+  ];
+
+  /// 0..1..0 once per ambient loop - for breathing / pulsing.
+  double get _breath => 0.5 - 0.5 * math.cos(2 * math.pi * _ambient.value);
+
+  double get _confidenceScore {
+    final data = _lastResultData;
+    if (data == null) return 0;
+    final overall = data['confidence'];
+    if (overall is num) return overall.toDouble();
+    final values = _detections
+        .map((d) => (d['confidence'] as num?)?.toDouble())
+        .whereType<double>()
+        .toList();
+    if (values.isEmpty) return 0;
+    return values.reduce((a, b) => a + b) / values.length;
+  }
+
+  Color _confidenceColor(double confidence) {
+    if (confidence >= 90) return const Color(0xFF2E7D32);
+    if (confidence >= 75) return const Color(0xFFEF6C00);
+    return const Color(0xFFC62828);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasResult = _lastResultData != null && !_isLoading;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      children: [
+        _buildHeroHeader(),
+        const SizedBox(height: 16),
+        _buildScannerCard(),
+        const SizedBox(height: 18),
+        _buildScanButton(),
+        if (hasResult || (_webImage != null && !_isLoading)) ...[
+          const SizedBox(height: 24),
+          _buildResultCard(),
+        ],
+        const SizedBox(height: 28),
+        _sectionTitle('Tips for a perfect scan', Icons.auto_awesome),
+        const SizedBox(height: 12),
+        _buildTips(),
+        const SizedBox(height: 28),
+        _sectionTitle('Did you know?', Icons.lightbulb_outline),
+        const SizedBox(height: 12),
+        _buildFactCard(),
+      ],
+    );
+  }
+
+  Widget _sectionTitle(String text, IconData icon) {
+    return Row(
+      children: [
+        // Yellow-to-amber gradient icon.
+        ShaderMask(
+          shaderCallback: (bounds) => const LinearGradient(
+            colors: [Color(0xFFFFC400), Color(0xFFFF8F00)],
+          ).createShader(bounds),
+          child: Icon(icon, size: 20, color: Colors.white),
+        ),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            text,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              color: _deepBrown,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Title with a gradient headline and a strip of Baybayin that gently
+  /// shimmers, so the screen feels alive before anything is scanned.
+  Widget _buildHeroHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ShaderMask(
+          shaderCallback: (bounds) => const LinearGradient(
+            // Ends in a deep golden yellow (not pure yellow, which would
+            // vanish on the cream background).
+            colors: [_deepBrown, Color(0xFFE08E00), Color(0xFFF5B800)],
+          ).createShader(bounds),
+          child: const Text(
+            'Read the ancient script',
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+              height: 1.1,
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Snap handwritten Baybayin and get Filipino in seconds.',
+          style: TextStyle(fontSize: 13, color: Colors.black54),
+        ),
+        const SizedBox(height: 8),
+        AnimatedBuilder(
+          animation: _ambient,
+          builder: (context, _) => ShaderMask(
+            shaderCallback: (bounds) => LinearGradient(
+              begin: Alignment(-1 + 3 * _ambient.value - 1, 0),
+              end: Alignment(1 + 3 * _ambient.value - 1, 0),
+              colors: const [Color(0x66795548), _yellow, Color(0x66795548)],
+            ).createShader(bounds),
+            child: const Text(
+              'ᜊᜌ᜔ᜊᜌᜒᜈ᜔ · ᜇᜌᜏ᜔ · ᜆᜄᜎᜓᜄ᜔',
+              style: TextStyle(
+                fontFamily: 'BaybayinCustom',
+                fontSize: 20,
+                color: Colors.white,
+                letterSpacing: 2,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The photo (or the empty scanner), framed by a slowly rotating
+  /// gradient glow.
+  Widget _buildScannerCard() {
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _ambient,
+        builder: (context, child) {
+          final glow = _isLoading ? 1.0 : 0.35 + 0.35 * _breath;
+          return Container(
+            height: 300,
+            padding: const EdgeInsets.all(2.5),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(26),
+              gradient: SweepGradient(
+                transform: GradientRotation(2 * math.pi * _ambient.value),
+                colors: const [
+                  // Starts and ends on the same yellow so the rotating
+                  // seam is invisible.
+                  _yellow,
+                  _amber,
+                  _gold,
+                  _yellow,
+                  Color(0xFFFF8F00),
+                  _gold,
+                  _yellow,
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: _yellow.withValues(alpha: 0.55 * glow),
+                  blurRadius: 22 + 18 * glow,
+                  spreadRadius: 2 + 2 * glow,
+                ),
+              ],
+            ),
+            child: child,
+          );
+        },
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(23.5),
+          child: ColoredBox(
+            color: const Color(0xFFFFFBF5),
+            child: Stack(
+              children: [
+                // Swipe right-to-left on the image to open the last result
+                // again. A Listener (raw touches) is used instead of a
+                // GestureDetector: it can't be "stolen" by a parent that
+                // also handles horizontal drags, and it works on distance,
+                // so a slow swipe counts too.
+                Positioned.fill(
+                  child: Listener(
+                    behavior: HitTestBehavior.opaque,
+                    onPointerDown: (e) => _swipeStart = e.position,
+                    onPointerUp: (e) {
+                      final start = _swipeStart;
+                      _swipeStart = null;
+                      if (start == null) return;
+                      final dx = e.position.dx - start.dx;
+                      final dy = e.position.dy - start.dy;
+                      if (dx < -_swipeMinDistance &&
+                          dx.abs() > dy.abs() * 1.5) {
+                        _openLastResult();
+                      }
+                    },
+                    onPointerCancel: (_) => _swipeStart = null,
+                    child: _webImage == null
+                        ? _buildEmptyScanner()
+                        : _buildImageDisplay(),
+                  ),
+                ),
+                // Side tab on the right edge: tap it or swipe it left to
+                // open the last result again (only after a successful scan).
+                if (_lastResultData != null && !_isLoading)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: Center(child: _buildResultSideTab()),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Empty state: radar rings pulse out from a scanner icon while a scan
+  /// line sweeps the card. Tap anywhere to open the camera.
+  Widget _buildEmptyScanner() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _captureFromCamera,
+      child: AnimatedBuilder(
+        animation: _ambient,
+        builder: (context, _) => LayoutBuilder(
+          builder: (context, constraints) => Stack(
+            alignment: Alignment.center,
+            children: [
+              for (var i = 0; i < 3; i++)
+                _radarRing((_ambient.value + i / 3) % 1),
+              Container(
+                width: 84,
+                height: 84,
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [_gold, _yellow, _amber],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Color(0x88FFC400),
+                      blurRadius: 22,
+                      offset: Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.document_scanner_outlined,
+                  color: _deepBrown,
+                  size: 38,
+                ),
+              ),
+              Positioned(
+                bottom: 22,
+                child: Text(
+                  'Tap to start scanning',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: _deepBrown.withValues(alpha: 0.6 + 0.4 * _breath),
+                  ),
+                ),
+              ),
+              _scanLine(constraints.maxHeight, faint: true),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _radarRing(double t) {
+    final size = 84 + 170 * t;
+    return IgnorePointer(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: Color.lerp(
+              _yellow,
+              _amber,
+              t,
+            )!.withValues(alpha: (1 - t) * 0.9),
+            width: 3 - t,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Horizontal glowing line sweeping top to bottom.
+  Widget _scanLine(double height, {bool faint = false}) {
+    final t = Curves.easeInOut.transform(
+      (_ambient.value * 2) % 1 < 0.5
+          ? ((_ambient.value * 2) % 1) * 2
+          : 2 - ((_ambient.value * 2) % 1) * 2,
+    );
+    return Positioned(
+      top: t * (height - 4),
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: Container(
+          height: 3,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                _amber.withValues(alpha: 0),
+                _yellow.withValues(alpha: faint ? 0.75 : 1),
+                _gold,
+                _yellow.withValues(alpha: faint ? 0.75 : 1),
+                _amber.withValues(alpha: 0),
+              ],
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: _yellow.withValues(alpha: faint ? 0.45 : 0.85),
+                blurRadius: 12,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildImageDisplay() {
-    final hasBoxes = !_isLoading &&
+    final hasBoxes =
+        !_isLoading &&
         _webImage != null &&
         _detections.isNotEmpty &&
         _imageWidth > 0 &&
@@ -362,23 +637,12 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     return Stack(
       children: [
         Center(
-          child: _webImage != null
-              ? Image.memory(_webImage!, fit: BoxFit.contain)
-              : Padding(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: const [
-                      Icon(Icons.document_scanner, size: 64, color: Colors.brown),
-                      SizedBox(height: 12),
-                      Text(
-                        "Upload or scan a document containing Baybayin scripts to transcribe",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey, fontSize: 14),
-                      ),
-                    ],
-                  ),
-                ),
+          child: Image.memory(
+            _webImage!,
+            fit: BoxFit.contain,
+            cacheWidth: 1600,
+            cacheHeight: 1600,
+          ),
         ),
         // Drawn on top of the image, sized to the same box, so the
         // painter can replicate BoxFit.contain's letterboxing math and
@@ -392,49 +656,496 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
               ),
             ),
           ),
+        // While reading: the photo dims, a bright scan line sweeps it and
+        // a pill says what's happening.
         if (_isLoading)
           Positioned.fill(
-            child: ColoredBox(
-              color: Colors.black.withOpacity(0.24),
-              child: Center(
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: const [
-                        CircularProgressIndicator(color: Colors.brown),
-                        SizedBox(height: 12),
-                        Text(
-                          "Processing text algorithm...",
-                          style: TextStyle(fontWeight: FontWeight.w500),
-                        ),
-                      ],
+            child: AnimatedBuilder(
+              animation: _ambient,
+              builder: (context, _) => LayoutBuilder(
+                builder: (context, constraints) => Stack(
+                  children: [
+                    Positioned.fill(
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: 0.28),
+                      ),
                     ),
-                  ),
-                ),
-              ),
-            ),
-          )
-        else if (_webImage != null)
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: GestureDetector(
-              onTap: _lastResultData != null ? _openLastResult : null,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                color: Colors.black54,
-                child: Text(
-                  _translatedResult,
-                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
+                    _scanLine(constraints.maxHeight),
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: _gold,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Reading strokes${'.' * (1 + (_ambient.value * 3).floor() % 3)}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
           ),
       ],
+    );
+  }
+
+  /// Big breathing gradient button - the one obvious next step.
+  Widget _buildScanButton() {
+    final label = _webImage == null ? 'Scan with Camera' : 'Scan Again';
+    return AnimatedBuilder(
+      animation: _ambient,
+      builder: (context, child) => Transform.scale(
+        scale: _isLoading ? 1 : 1 + 0.02 * _breath,
+        child: Container(
+          height: 58,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(29),
+            // Yellow gradient whose bright band slowly drifts back and
+            // forth, like light moving across it.
+            gradient: LinearGradient(
+              begin: Alignment(-1.6 + 1.2 * _breath, 0),
+              end: Alignment(1.6 + 1.2 * _breath, 0),
+              colors: _isLoading
+                  ? [Colors.grey.shade400, Colors.grey.shade500]
+                  : const [_amber, _yellow, _gold, _yellow, _amber],
+            ),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: _isLoading ? 0 : 0.7),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(
+                  0xFFFFC400,
+                ).withValues(alpha: _isLoading ? 0 : 0.45 + 0.3 * _breath),
+                blurRadius: 18 + 14 * _breath,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(29),
+          onTap: _isLoading ? null : _captureFromCamera,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.camera_alt_rounded, color: _deepBrown),
+              const SizedBox(width: 10),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: _deepBrown,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The last scan's translation, with a confidence ring, quick stats and
+  /// a button into the full breakdown. Also shows "nothing found" / error
+  /// messages when a scan didn't produce a result.
+  Widget _buildResultCard() {
+    final data = _lastResultData;
+    if (data == null) {
+      return GlassContainer(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            const Icon(Icons.info_outline, color: Color(0xFFEF6C00)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _translatedResult,
+                style: const TextStyle(fontSize: 14, color: Colors.black87),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final confidence = _confidenceScore;
+    final color = _confidenceColor(confidence);
+    final characters = _detections.length;
+    final words = _translatedResult
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .length;
+
+    return TweenAnimationBuilder<double>(
+      // Pops in with a little rise + fade each time a new result lands.
+      key: ValueKey(identityHashCode(data)),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.easeOutBack,
+      builder: (context, t, child) => Opacity(
+        opacity: t.clamp(0.0, 1.0),
+        child: Transform.translate(
+          offset: Offset(0, 24 * (1 - t)),
+          child: child,
+        ),
+      ),
+      child: GlassContainer(
+        padding: const EdgeInsets.all(18),
+        // Yellow-tinted glass so the result card glows with the accent.
+        tint: const Color(0xA6FFF4B8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [_gold, _yellow, _amber],
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x66FFC400), blurRadius: 10),
+                    ],
+                  ),
+                  child: const Text(
+                    'LAST CAPTURED',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                if (confidence > 0) _confidenceRing(confidence, color),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _translatedResult,
+              style: const TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w900,
+                color: _deepBrown,
+                height: 1.2,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _statChip(Icons.text_fields, '$characters characters'),
+                _statChip(
+                  Icons.short_text,
+                  '$words ${words == 1 ? 'word' : 'words'}',
+                ),
+                _statChip(Icons.offline_bolt_outlined, 'On-device'),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _openLastResult,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _deepBrown,
+                  foregroundColor: _yellow,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                icon: const Icon(Icons.grid_view_rounded, size: 18),
+                label: const Text(
+                  'View character breakdown',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Circular gauge that fills up to the confidence when it appears.
+  Widget _confidenceRing(double confidence, Color color) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: confidence / 100),
+      duration: const Duration(milliseconds: 900),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, _) => SizedBox(
+        width: 54,
+        height: 54,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            SizedBox.expand(
+              child: CircularProgressIndicator(
+                value: value,
+                strokeWidth: 5,
+                strokeCap: StrokeCap.round,
+                color: color,
+                backgroundColor: color.withValues(alpha: 0.15),
+              ),
+            ),
+            Text(
+              '${(value * 100).round()}%',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statChip(IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            _yellow.withValues(alpha: 0.55),
+            _gold.withValues(alpha: 0.35),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _amber.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: Colors.brown),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: _deepBrown,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Sideways-scrolling row of colorful tip cards.
+  Widget _buildTips() {
+    return SizedBox(
+      height: 96,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        clipBehavior: Clip.none,
+        itemCount: _tips.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
+        itemBuilder: (context, i) {
+          final (icon, color, label) = _tips[i];
+          return Container(
+            width: 112,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                // Each tip keeps its own color at the top, flowing into a
+                // shared yellow wash, so the row reads as one yellow family.
+                colors: [
+                  color.withValues(alpha: 0.16),
+                  _yellow.withValues(alpha: 0.28),
+                  _gold.withValues(alpha: 0.45),
+                ],
+              ),
+              border: Border.all(color: _yellow.withValues(alpha: 0.9)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x33FFC400),
+                  blurRadius: 10,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: Colors.white, size: 18),
+                ),
+                const Spacer(),
+                Text(
+                  label,
+                  maxLines: 2,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: _deepBrown,
+                    height: 1.15,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// Rotating fact with a big Baybayin sample; slides/fades between facts
+  /// and shows which one you're on.
+  Widget _buildFactCard() {
+    final (sample, fact) = _facts[_factIndex];
+    return GestureDetector(
+      // Tap to skip to the next fact.
+      onTap: () =>
+          setState(() => _factIndex = (_factIndex + 1) % _facts.length),
+      child: Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            // Dark brown warming into a golden corner.
+            colors: [_deepBrown, Color(0xFF8D4A2B), Color(0xFFC77800)],
+            stops: [0, 0.6, 1],
+          ),
+          border: Border.all(color: _yellow.withValues(alpha: 0.7), width: 1.5),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x55FFC400),
+              blurRadius: 22,
+              offset: Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 450),
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0.08, 0),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: child,
+                ),
+              ),
+              child: Row(
+                key: ValueKey(_factIndex),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 84,
+                    child: Text(
+                      sample,
+                      style: const TextStyle(
+                        fontFamily: 'BaybayinCustom',
+                        fontSize: 28,
+                        color: _gold,
+                        height: 1.2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      fact,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        height: 1.4,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                for (var i = 0; i < _facts.length; i++)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    margin: const EdgeInsets.only(right: 6),
+                    width: i == _factIndex ? 18 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: i == _factIndex
+                          ? _gold
+                          : Colors.white.withValues(alpha: 0.35),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                const Spacer(),
+                Text(
+                  'Tap for next',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.white.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -465,7 +1176,11 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
             bottomLeft: Radius.circular(14),
           ),
           boxShadow: [
-            BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(-2, 2)),
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 6,
+              offset: Offset(-2, 2),
+            ),
           ],
         ),
         child: const Column(
@@ -490,164 +1205,6 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildUploadWidget() {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.brown.withOpacity(0.1),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.photo_library, size: 28, color: Colors.brown),
-        ),
-        const SizedBox(height: 8),
-        const Text("Gallery", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Colors.black87)),
-      ],
-    );
-  }
-
-  Widget _buildCameraWidget() {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.brown.withOpacity(0.1),
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.camera_alt, size: 28, color: Colors.brown),
-        ),
-        const SizedBox(height: 8),
-        const Text("Camera", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Colors.black87)),
-      ],
-    );
-  }
-
-  /// Two-option segmented toggle for "Marker / Felt-tip" vs "Pen",
-  /// controlling which stroke-gap preset the backend uses. Placed above
-  /// the Gallery/Camera row so the user picks it before capturing.
-  Widget _buildInputTypeToggle() {
-    Widget buildOption(String value, String label, IconData icon) {
-      final bool selected = _inputType == value;
-      return Expanded(
-        child: GestureDetector(
-          onTap: () => setState(() => _inputType = value),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              color: selected ? Colors.brown : Colors.brown.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 18, color: selected ? Colors.white : Colors.brown),
-                const SizedBox(height: 4),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : Colors.brown,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F5F5),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          children: [
-            buildOption('marker', 'Marker / Felt-tip', Icons.brush),
-            const SizedBox(width: 4),
-            buildOption('pen', 'Pen', Icons.edit),
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Expanded(
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Positioned.fill(
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF5F5F5),
-                    borderRadius: BorderRadius.circular(15),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  // Swipe right-to-left on the image to open the last result again.
-                  // A Listener (raw touches) is used instead of a GestureDetector:
-                  // it can't be "stolen" by a parent that also handles horizontal
-                  // drags (tabs / page view / scroll view), and it works on
-                  // distance, so a slow swipe counts too.
-                  child: Listener(
-                    behavior: HitTestBehavior.opaque,
-                    onPointerDown: (e) => _swipeStart = e.position,
-                    onPointerUp: (e) {
-                      final start = _swipeStart;
-                      _swipeStart = null;
-                      if (start == null) return;
-                      final dx = e.position.dx - start.dx;
-                      final dy = e.position.dy - start.dy;
-                      if (dx < -_swipeMinDistance && dx.abs() > dy.abs() * 1.5) {
-                        _openLastResult();
-                      }
-                    },
-                    onPointerCancel: (_) => _swipeStart = null,
-                    child: _buildImageDisplay(),
-                  ),
-                ),
-              ),
-              // Side tab on the right edge: tap it or swipe it left to open
-              // the last result again (only shown after a successful scan).
-              if (_lastResultData != null && !_isLoading)
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(child: _buildResultSideTab()),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        _buildInputTypeToggle(),
-        const SizedBox(height: 16),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 30),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              GestureDetector(onTap: _uploadFromGallery, child: _buildUploadWidget()),
-              const SizedBox(width: 40),
-              GestureDetector(onTap: _captureFromCamera, child: _buildCameraWidget()),
-            ],
-          ),
-        ),
-      ],
     );
   }
 }
@@ -679,7 +1236,8 @@ class _DetectionBoxPainter extends CustomPainter {
     final scaleY = destSize.height / imageSize.height;
 
     final boxPaint = Paint()
-      ..color = const Color(0xFF00E676) // green
+      ..color =
+          const Color(0xFF00E676) // green
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -716,7 +1274,10 @@ class _DetectionBoxPainter extends CustomPainter {
         )..layout();
         textPainter.paint(
           canvas,
-          Offset(rect.left, (rect.top - textPainter.height).clamp(0, size.height)),
+          Offset(
+            rect.left,
+            (rect.top - textPainter.height).clamp(0, size.height),
+          ),
         );
       }
     }
@@ -724,6 +1285,7 @@ class _DetectionBoxPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DetectionBoxPainter oldDelegate) {
-    return oldDelegate.detections != detections || oldDelegate.imageSize != imageSize;
+    return oldDelegate.detections != detections ||
+        oldDelegate.imageSize != imageSize;
   }
 }

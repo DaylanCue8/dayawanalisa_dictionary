@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:sensors_plus/sensors_plus.dart';
 
+import '../services/app_settings.dart';
+import '../widgets/liquid_glass_selector.dart';
+
 /// Custom camera capture screen (replaces the OS camera app for this
 /// flow) so we can force a high resolution preset and lock focus/
 /// exposure before capture - neither of which is possible when going
@@ -26,8 +29,18 @@ import 'package:sensors_plus/sensors_plus.dart';
 /// button and stability-based auto-capture - since both go through
 /// the same _capture() -> takePicture() call.
 ///
-/// Returns the captured, cropped JPEG bytes via Navigator.pop, or null
-/// if the user backs out without capturing.
+/// Returns the captured, cropped JPEG bytes and selected input type via
+/// Navigator.pop, or null if the user backs out without capturing.
+class CameraCaptureResult {
+  final Uint8List imageBytes;
+  final String inputType;
+
+  const CameraCaptureResult({
+    required this.imageBytes,
+    required this.inputType,
+  });
+}
+
 class CameraCaptureScreen extends StatefulWidget {
   const CameraCaptureScreen({super.key});
 
@@ -105,6 +118,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   double _stabilityPercent = 0.0;
   bool _autoCaptureEnabled = true;
   bool _autoCaptureFired = false;
+  // Starting values come from Settings.
+  String _cameraInputType = AppSettings.instance.cameraInputType;
+  bool _gridEnabled = AppSettings.instance.cameraGridByDefault;
+  bool _multiPageEnabled = false;
+
+  static const Color _accentColor = Color(0xFFFFFF00);
 
   @override
   void initState() {
@@ -166,7 +185,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     if (controller == null || !controller.value.isInitialized) return;
 
     final currentIndex = _flashModeCycle.indexOf(_flashMode);
-    final nextMode = _flashModeCycle[(currentIndex + 1) % _flashModeCycle.length];
+    final nextMode =
+        _flashModeCycle[(currentIndex + 1) % _flashModeCycle.length];
 
     try {
       await controller.setFlashMode(nextMode);
@@ -189,7 +209,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text('Flash "${_flashLabel(nextMode)}" is not supported on this device'),
+            content: Text(
+              'Flash "${_flashLabel(nextMode)}" is not supported on this device',
+            ),
             duration: const Duration(seconds: 2),
           ),
         );
@@ -222,6 +244,162 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     }
   }
 
+  Widget _buildCameraLogo() {
+    return Image.asset(
+      'assets/images/dayawlogo.png',
+      height: 42,
+      errorBuilder: (context, error, stackTrace) => const Text(
+        'DAYAW',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopControls() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextButton.icon(
+            onPressed: () => setState(() => _gridEnabled = !_gridEnabled),
+            style: ButtonStyle(
+              foregroundColor: WidgetStatePropertyAll(
+                _gridEnabled ? _accentColor : Colors.white,
+              ),
+              overlayColor: WidgetStatePropertyAll(
+                _accentColor.withValues(alpha: 0.2),
+              ),
+            ),
+            icon: Icon(
+              Icons.grid_4x4,
+              color: _gridEnabled ? _accentColor : Colors.white70,
+              size: 18,
+            ),
+            label: const Text('Grid'),
+          ),
+          const SizedBox(width: 4),
+          Container(
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              color: Colors.white12,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            // Tap, or long-press / drag the yellow pill, to switch.
+            child: SizedBox(
+              width: 132,
+              child: LiquidGlassSelector(
+                count: _inputTypes.length,
+                selectedIndex: _inputTypes.indexWhere(
+                  (t) => t.$1 == _cameraInputType,
+                ),
+                height: 32,
+                onChanged: (i) =>
+                    setState(() => _cameraInputType = _inputTypes[i].$1),
+                itemBuilder: (context, i, selectedness) => Text(
+                  _inputTypes[i].$2,
+                  style: TextStyle(
+                    color: Color.lerp(
+                      Colors.white70,
+                      Colors.black87,
+                      selectedness,
+                    ),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const List<(String, String)> _inputTypes = [
+    ('marker', 'Marker'),
+    ('pen', 'Pen'),
+  ];
+
+  Widget _buildBottomControl({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onPressed,
+    bool active = false,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 52,
+          height: 52,
+          decoration: BoxDecoration(
+            color: active ? Colors.white : Colors.black54,
+            shape: BoxShape.circle,
+          ),
+          child: IconButton(
+            tooltip: label,
+            onPressed: onPressed,
+            style: ButtonStyle(
+              overlayColor: WidgetStatePropertyAll(
+                _accentColor.withValues(alpha: 0.3),
+              ),
+            ),
+            icon: Icon(
+              icon,
+              color: active ? Colors.black87 : Colors.white,
+              size: 24,
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMultiPageControl() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+      decoration: BoxDecoration(
+        color: _multiPageEnabled ? _accentColor : Colors.black54,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: TextButton.icon(
+        onPressed: () => setState(() => _multiPageEnabled = !_multiPageEnabled),
+        style: ButtonStyle(
+          foregroundColor: WidgetStatePropertyAll(
+            _multiPageEnabled ? Colors.black87 : Colors.white,
+          ),
+          overlayColor: WidgetStatePropertyAll(
+            _accentColor.withValues(alpha: 0.25),
+          ),
+        ),
+        icon: Icon(
+          Icons.library_add,
+          color: _multiPageEnabled ? Colors.black87 : Colors.white,
+          size: 20,
+        ),
+        label: const Text('Multi-page', style: TextStyle(fontSize: 12)),
+      ),
+    );
+  }
+
   /// Starts listening to device motion for the auto-capture stability
   /// meter. If the sensor is unavailable on this device/platform, the
   /// listener simply never fires - auto-capture stays inert and the
@@ -249,14 +427,17 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     if (_recentJitter.length < _jitterWindowSize) return;
 
     final mean = _recentJitter.reduce((a, b) => a + b) / _recentJitter.length;
-    final variance = _recentJitter
+    final variance =
+        _recentJitter
             .map((m) => (m - mean) * (m - mean))
             .reduce((a, b) => a + b) /
         _recentJitter.length;
     final stdDev = sqrt(variance);
 
-    final percent =
-        (100 * (1 - (stdDev / _maxJitterForZeroPercent))).clamp(0.0, 100.0);
+    final percent = (100 * (1 - (stdDev / _maxJitterForZeroPercent))).clamp(
+      0.0,
+      100.0,
+    );
 
     if (!mounted) return;
     setState(() => _stabilityPercent = percent);
@@ -280,7 +461,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   /// Tap-to-focus: locks focus and exposure at the tapped point so the
   /// shot is sharp before capture, instead of relying on whatever the
   /// continuous autofocus happened to settle on.
-  Future<void> _onTapToFocus(TapDownDetails details, BoxConstraints constraints) async {
+  Future<void> _onTapToFocus(
+    TapDownDetails details,
+    BoxConstraints constraints,
+  ) async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) return;
 
@@ -318,9 +502,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
 
     for (int y = 1; y < height - 1; y++) {
       for (int x = 1; x < width - 1; x++) {
-        final laplacian = -4 * luminanceAt(x, y)
-            + luminanceAt(x - 1, y) + luminanceAt(x + 1, y)
-            + luminanceAt(x, y - 1) + luminanceAt(x, y + 1);
+        final laplacian =
+            -4 * luminanceAt(x, y) +
+            luminanceAt(x - 1, y) +
+            luminanceAt(x + 1, y) +
+            luminanceAt(x, y - 1) +
+            luminanceAt(x, y + 1);
         sum += laplacian;
         sumSq += laplacian * laplacian;
         count++;
@@ -355,7 +542,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
 
   Future<void> _capture() async {
     final controller = _controller;
-    if (controller == null || !controller.value.isInitialized || _isCapturing) return;
+    if (controller == null || !controller.value.isInitialized || _isCapturing)
+      return;
 
     setState(() => _isCapturing = true);
     try {
@@ -385,7 +573,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
       final cropHeight = (oriented.height * _guideHeightFactor).round();
       final x = ((oriented.width - cropWidth) / 2).round();
       final y = ((oriented.height - cropHeight) / 2).round();
-      final cropped = img.copyCrop(oriented, x: x, y: y, width: cropWidth, height: cropHeight);
+      final cropped = img.copyCrop(
+        oriented,
+        x: x,
+        y: y,
+        width: cropWidth,
+        height: cropHeight,
+      );
 
       final blurScore = _computeBlurScore(cropped);
       if (blurScore < _blurVarianceThreshold) {
@@ -400,9 +594,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         return; // stay on the camera screen - do NOT pop
       }
 
-      final croppedBytes = Uint8List.fromList(img.encodeJpg(cropped, quality: 95));
+      final croppedBytes = Uint8List.fromList(
+        img.encodeJpg(cropped, quality: 95),
+      );
       if (!mounted) return;
-      Navigator.of(context).pop<Uint8List>(croppedBytes);
+      Navigator.of(context).pop<CameraCaptureResult>(
+        CameraCaptureResult(
+          imageBytes: croppedBytes,
+          inputType: _cameraInputType,
+        ),
+      );
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -414,9 +615,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
           _autoCaptureFired = false;
           _stableSince = null;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Capture failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Capture failed: $e')));
       }
     }
   }
@@ -426,7 +627,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     _accelSubscription?.cancel();
     // Make sure the torch doesn't stay on after leaving the screen.
     final controller = _controller;
-    if (controller != null && controller.value.isInitialized && _flashMode == FlashMode.torch) {
+    if (controller != null &&
+        controller.value.isInitialized &&
+        _flashMode == FlashMode.torch) {
       controller.setFlashMode(FlashMode.off).catchError((_) {});
     }
     controller?.dispose();
@@ -470,7 +673,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
           future: _initializeControllerFuture,
           builder: (context, snapshot) {
             if (snapshot.connectionState != ConnectionState.done) {
-              return const Center(child: CircularProgressIndicator(color: Colors.white));
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              );
             }
             return LayoutBuilder(
               builder: (context, constraints) {
@@ -478,7 +683,8 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                   fit: StackFit.expand,
                   children: [
                     GestureDetector(
-                      onTapDown: (details) => _onTapToFocus(details, constraints),
+                      onTapDown: (details) =>
+                          _onTapToFocus(details, constraints),
                       child: CameraPreview(controller),
                     ),
                     // Framing guide - this is now the ACTUAL crop
@@ -493,7 +699,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                           heightFactor: _guideHeightFactor,
                           child: Container(
                             decoration: BoxDecoration(
-                              border: Border.all(color: Colors.white70, width: 2),
+                              border: Border.all(
+                                color: Colors.white70,
+                                width: 2,
+                              ),
                               borderRadius: BorderRadius.circular(12),
                             ),
                           ),
@@ -509,7 +718,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                             width: 40,
                             height: 40,
                             decoration: BoxDecoration(
-                              border: Border.all(color: Colors.yellow, width: 2),
+                              border: Border.all(
+                                color: Colors.yellow,
+                                width: 2,
+                              ),
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -519,49 +731,25 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                       top: 8,
                       left: 8,
                       child: IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                        icon: const Icon(
+                          Icons.close,
+                          color: Colors.white,
+                          size: 28,
+                        ),
                         onPressed: () => Navigator.of(context).pop(),
                       ),
                     ),
-                    // Top-right controls: flash (always available) and
-                    // auto-capture toggle. They are independent - the
-                    // flash choice applies to every capture, manual or
-                    // automatic.
                     Positioned(
-                      top: 8,
-                      right: 8,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_flashSupported)
-                            IconButton(
-                              icon: Icon(
-                                _flashIcon(_flashMode),
-                                color: flashIsActive ? Colors.yellowAccent : Colors.white70,
-                                size: 28,
-                              ),
-                              tooltip: 'Flash: ${_flashLabel(_flashMode)}',
-                              onPressed: _isCapturing ? null : _cycleFlashMode,
-                            ),
-                          // Toggle for auto-capture, in case a user
-                          // prefers to always capture manually.
-                          IconButton(
-                            icon: Icon(
-                              _autoCaptureEnabled ? Icons.bolt : Icons.bolt_outlined,
-                              color: _autoCaptureEnabled ? Colors.greenAccent : Colors.white70,
-                              size: 28,
-                            ),
-                            tooltip: _autoCaptureEnabled ? 'Auto-capture on' : 'Auto-capture off',
-                            onPressed: () {
-                              setState(() {
-                                _autoCaptureEnabled = !_autoCaptureEnabled;
-                                _stableSince = null;
-                                _autoCaptureFired = false;
-                              });
-                            },
-                          ),
-                        ],
-                      ),
+                      top: 10,
+                      left: 0,
+                      right: 0,
+                      child: Center(child: _buildCameraLogo()),
+                    ),
+                    Positioned(
+                      top: 58,
+                      left: 0,
+                      right: 0,
+                      child: Center(child: _buildTopControls()),
                     ),
                     Positioned(
                       bottom: 24,
@@ -570,6 +758,38 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              if (_flashSupported)
+                                _buildBottomControl(
+                                  icon: _flashIcon(_flashMode),
+                                  label: 'Flashlight',
+                                  active: flashIsActive,
+                                  onPressed: _isCapturing
+                                      ? null
+                                      : _cycleFlashMode,
+                                ),
+                              const SizedBox(width: 16),
+                              _buildBottomControl(
+                                icon: _autoCaptureEnabled
+                                    ? Icons.bolt
+                                    : Icons.bolt_outlined,
+                                label: 'Auto-detect',
+                                active: _autoCaptureEnabled,
+                                onPressed: () {
+                                  setState(() {
+                                    _autoCaptureEnabled = !_autoCaptureEnabled;
+                                    _stableSince = null;
+                                    _autoCaptureFired = false;
+                                  });
+                                },
+                              ),
+                              const SizedBox(width: 16),
+                              _buildMultiPageControl(),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
                           if (_autoCaptureEnabled && !_isCapturing)
                             Padding(
                               padding: const EdgeInsets.only(bottom: 12),
@@ -578,7 +798,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                                     ? 'Hold steady…'
                                     : 'Steadying: ${_stabilityPercent.round()}%',
                                 style: TextStyle(
-                                  color: isSteady ? Colors.greenAccent : Colors.white70,
+                                  color: isSteady
+                                      ? Colors.greenAccent
+                                      : Colors.white70,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -598,12 +820,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                                         width: 84,
                                         height: 84,
                                         child: CircularProgressIndicator(
-                                          value: (_stabilityPercent / 100).clamp(0.0, 1.0),
+                                          value: (_stabilityPercent / 100)
+                                              .clamp(0.0, 1.0),
                                           strokeWidth: 4,
                                           backgroundColor: Colors.white24,
-                                          valueColor: AlwaysStoppedAnimation<Color>(
-                                            isSteady ? Colors.greenAccent : Colors.orangeAccent,
-                                          ),
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                                isSteady
+                                                    ? Colors.greenAccent
+                                                    : Colors.orangeAccent,
+                                              ),
                                         ),
                                       ),
                                     Container(
@@ -611,13 +837,20 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                                       height: 72,
                                       decoration: BoxDecoration(
                                         shape: BoxShape.circle,
-                                        border: Border.all(color: Colors.white, width: 4),
-                                        color: _isCapturing ? Colors.grey : Colors.white24,
+                                        border: Border.all(
+                                          color: Colors.white,
+                                          width: 4,
+                                        ),
+                                        color: _isCapturing
+                                            ? Colors.grey
+                                            : Colors.white24,
                                       ),
                                       child: _isCapturing
                                           ? const Padding(
                                               padding: EdgeInsets.all(20),
-                                              child: CircularProgressIndicator(color: Colors.white),
+                                              child: CircularProgressIndicator(
+                                                color: Colors.white,
+                                              ),
                                             )
                                           : null,
                                     ),

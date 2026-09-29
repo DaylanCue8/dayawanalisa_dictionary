@@ -50,7 +50,7 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.10"
-        buildPython("C:/Users/Admin/AppData/Local/Python/pythoncore-3.10-64/python.exe")
+        buildPython("C:/Users/RAIN/miniconda3/envs/chaquopy310/python.exe")
         pip {
             install("numpy")
             install("opencv-python")
