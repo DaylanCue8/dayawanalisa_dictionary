@@ -72,16 +72,7 @@ class TagalogToBaybayinLocalTranslator {
     final pieces = <({String latin, String baybayin})>[];
     var workingText = originalText.replaceAll('ng', 'NG');
 
-    // 'mga' is pronounced "ma-nga" (ma + nga), NOT "ma-ga". Handled as
-    // its own token, with a word boundary, so it works anywhere in the
-    // text - not just when it's the entire input.
-    final pattern = RegExp(
-      r'(\bmga\b)|(NG[aeiou]|(?:[bkdrghlmnpstwry])?[aeiou])|(NG|[bkdrghlmnpstwry])|([aeiou])|(\s+)|(\.|\,)',
-    );
-
-    final matches = pattern.allMatches(workingText);
-
-    for (final match in matches) {
+    for (final match in _tokenPattern.allMatches(workingText)) {
       pieces.add((
         latin: match.group(0)!.replaceAll('NG', 'ng'),
         baybayin: _pieceFor(match),
@@ -91,81 +82,59 @@ class TagalogToBaybayinLocalTranslator {
     return pieces;
   }
 
+  /// Tokenizer for the NG-marked, lower-cased input. One group per rule,
+  /// tried left to right:
+  ///   1. the word 'mga' - pronounced "ma-nga" (ma + nga), NOT "ma-ga";
+  ///      matched with word boundaries so it works anywhere in the text
+  ///   2. consonant + vowel syllable (CV), 'NG' counting as one consonant
+  ///   3. lone consonant (no vowel after it)
+  ///   4. lone vowel
+  ///   5. whitespace
+  ///   6. '.' or ','
+  /// Anything else (digits, c/f/j/q/v/x/z, other punctuation) matches no
+  /// group and is simply left out of the output.
+  ///
+  /// Every group is reachable - group 2 REQUIRES a consonant, so a lone
+  /// vowel always falls to group 4 - which keeps every line of
+  /// [_pieceFor] coverable by tests.
+  static final RegExp _tokenPattern = RegExp(
+    r'(\bmga\b)|(NG[aeiou]|[bkdrghlmnpstwry][aeiou])|(NG|[bkdrghlmnpstwry])|([aeiou])|(\s+)|([.,])',
+  );
+
   /// The Baybayin for one matched piece of the (NG-marked) input.
   String _pieceFor(RegExpMatch match) {
     final mgaWord = match.group(1);
     final cv = match.group(2);
-    final c = match.group(3);
     final v = match.group(4);
     final space = match.group(5);
     final punct = match.group(6);
 
-    if (mgaWord != null) {
-      return '${baseMap['ma']}${baseMap['nga']}';
-    }
-
-    if (space != null) {
-      return space;
-    }
-
-    if (punct != null) {
-      if (punct == '.') {
-        return doubleDanda;
-      } else if (punct == ',') {
-        return danda;
-      }
-    }
-
-    final vowelToken =
-        v ??
-        (cv != null && cv.length == 1 && RegExp(r'^[aeiou]$').hasMatch(cv)
-            ? cv
-            : null);
-    if (vowelToken != null) {
-      return baseMap[vowelToken] ?? '';
-    }
-
+    if (mgaWord != null) return '${baseMap['ma']}${baseMap['nga']}';
+    if (space != null) return space;
+    if (punct != null) return punct == '.' ? doubleDanda : danda;
+    if (v != null) return baseMap[v]!;
     if (cv != null) {
-      final vowelPart = cv.substring(cv.length - 1);
-      final consPart = cv.substring(0, cv.length - 1);
-
-      String key;
-      if (consPart == 'r') {
-        key = 'ra';
-      } else if (consPart == 'NG') {
-        key = 'nga';
-      } else {
-        key = '${consPart}a';
-      }
-
-      final base = baseMap[key] ?? '';
-
-      if (vowelPart == 'e') {
-        return base + kudlitE;
-      } else if (vowelPart == 'i') {
-        return base + kudlitI;
-      } else if (vowelPart == 'o') {
-        return base + kudlitO;
-      } else if (vowelPart == 'u') {
-        return base + kudlitU;
-      } else {
-        return base;
-      }
-    } else if (c != null) {
-      String key;
-      if (c == 'r') {
-        key = 'ra';
-      } else if (c == 'NG') {
-        key = 'nga';
-      } else {
-        key = '${c}a';
-      }
-
-      final base = baseMap[key] ?? '';
-      if (base.isNotEmpty) {
-        return base + virama;
-      }
+      final consonant = cv.substring(0, cv.length - 1);
+      final vowel = cv.substring(cv.length - 1);
+      return baseMap[_syllableKey(consonant)]! + _kudlitFor(vowel);
     }
-    return '';
+    // Only group 3 is left: a consonant with no vowel, written with the
+    // virama (vowel-killer) mark.
+    return baseMap[_syllableKey(match.group(3)!)]! + virama;
   }
+
+  /// baseMap key of a consonant's "+a" syllable: 'b' -> 'ba', 'r' -> 'ra'
+  /// (same glyph as 'da'), 'NG' -> 'nga'.
+  String _syllableKey(String consonant) =>
+      consonant == 'NG' ? 'nga' : '${consonant}a';
+
+  /// Vowel mark after a consonant: kudlit above for e/i, below for o/u,
+  /// none for a (the consonant already carries "a").
+  String _kudlitFor(String vowel) => switch (vowel) {
+    'e' => kudlitE,
+    'i' => kudlitI,
+    'o' => kudlitO,
+    'u' => kudlitU,
+    _ => '',
+  };
 }

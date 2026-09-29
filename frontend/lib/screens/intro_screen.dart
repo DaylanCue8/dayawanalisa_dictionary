@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/app_language.dart';
+import 'legal_screen.dart';
 import '../services/app_settings.dart';
 import '../services/tagalog_to_baybayin_local_translator.dart';
 import '../widgets/glass.dart';
@@ -126,9 +128,9 @@ class _IntroScreenState extends State<IntroScreen>
                       duration: const Duration(milliseconds: 250),
                       child: TextButton(
                         onPressed: isLast ? null : _finish,
-                        child: const Text(
-                          'Skip',
-                          style: TextStyle(
+                        child: Text(
+                          context.tr('Skip', 'Laktawan'),
+                          style: const TextStyle(
                             color: _deepBrown,
                             fontWeight: FontWeight.w700,
                           ),
@@ -146,6 +148,15 @@ class _IntroScreenState extends State<IntroScreen>
                       _parallax(2, _buildWritePage()),
                       _parallax(3, _buildOfflinePage()),
                     ],
+                  ),
+                ),
+                // Last page: what tapping "Get Started" agrees to.
+                AnimatedOpacity(
+                  opacity: isLast ? 1 : 0,
+                  duration: const Duration(milliseconds: 250),
+                  child: IgnorePointer(
+                    ignoring: !isLast,
+                    child: _buildLegalNotice(),
                   ),
                 ),
                 _buildBottomBar(isLast),
@@ -342,9 +353,9 @@ class _IntroScreenState extends State<IntroScreen>
                       opacity: afterglow,
                       child: Transform.translate(
                         offset: Offset(0, 12 * (1 - afterglow)),
-                        child: const Column(
+                        child: Column(
                           children: [
-                            Text(
+                            const Text(
                               'ᜇᜌᜏ᜔',
                               style: TextStyle(
                                 fontFamily: 'BaybayinCustom',
@@ -353,19 +364,25 @@ class _IntroScreenState extends State<IntroScreen>
                                 letterSpacing: 4,
                               ),
                             ),
-                            SizedBox(height: 10),
+                            const SizedBox(height: 10),
                             Text(
-                              'Pride in our own script.',
-                              style: TextStyle(
+                              context.tr(
+                                'Pride in our own script.',
+                                'Dangal sa sarili nating panitik.',
+                              ),
+                              style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w600,
                                 color: _deepBrown,
                               ),
                             ),
-                            SizedBox(height: 4),
+                            const SizedBox(height: 4),
                             Text(
-                              'Read and write Baybayin, anywhere.',
-                              style: TextStyle(
+                              context.tr(
+                                'Read and write Baybayin, anywhere.',
+                                'Magbasa at magsulat ng Baybayin, saanman.',
+                              ),
+                              style: const TextStyle(
                                 fontSize: 13,
                                 color: Colors.black54,
                               ),
@@ -485,10 +502,16 @@ class _IntroScreenState extends State<IntroScreen>
           );
         },
       ),
-      title: 'Scan handwritten Baybayin',
-      body:
-          'Point your camera at Baybayin writing and read it in Filipino, '
-          'letter by letter.',
+      title: context.tr(
+        'Scan handwritten Baybayin',
+        'I-scan ang sulat-kamay na Baybayin',
+      ),
+      body: context.tr(
+        'Point your camera at Baybayin writing and read it in Latin letters, '
+            'one character at a time.',
+        'Itutok ang kamera sa sulat na Baybayin at basahin ito sa titik '
+            'Latin, isa-isang karakter.',
+      ),
     );
   }
 
@@ -518,9 +541,9 @@ class _IntroScreenState extends State<IntroScreen>
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text(
+                  Text(
                     'FILIPINO',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 11,
                       letterSpacing: 1.2,
                       fontWeight: FontWeight.w800,
@@ -606,10 +629,16 @@ class _IntroScreenState extends State<IntroScreen>
           );
         },
       ),
-      title: 'Turn Filipino into Baybayin',
-      body:
-          'Type anything in Filipino and watch it become Baybayin, '
-          'syllable by syllable.',
+      title: context.tr(
+        'Turn Filipino into Baybayin',
+        'Gawing Baybayin ang Filipino',
+      ),
+      body: context.tr(
+        'Type anything in Filipino and watch it become Baybayin, '
+            'syllable by syllable.',
+        'Mag-type ng kahit ano sa Filipino at panoorin itong maging '
+            'Baybayin, pantig por pantig.',
+      ),
     );
   }
 
@@ -641,18 +670,36 @@ class _IntroScreenState extends State<IntroScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _featureBadge(Icons.wifi_off_rounded, 'Offline', pulse),
-                _featureBadge(Icons.lock_outline_rounded, 'Private', pulse),
-                _featureBadge(Icons.bolt_rounded, 'Fast', pulse),
+                _featureBadge(
+                  Icons.wifi_off_rounded,
+                  context.tr('Offline', 'Offline'),
+                  pulse,
+                ),
+                _featureBadge(
+                  Icons.lock_outline_rounded,
+                  context.tr('Private', 'Pribado'),
+                  pulse,
+                ),
+                _featureBadge(
+                  Icons.bolt_rounded,
+                  context.tr('Fast', 'Mabilis'),
+                  pulse,
+                ),
               ],
             ),
           );
         },
       ),
-      title: 'No internet? No problem.',
-      body:
-          'Everything runs right on your phone. Your photos and text never '
-          'leave it.',
+      title: context.tr(
+        'No internet? No problem.',
+        'Walang internet? Walang problema.',
+      ),
+      body: context.tr(
+        'Everything runs right on your phone. Your photos and text never '
+            'leave it.',
+        'Lahat ay tumatakbo mismo sa iyong phone. Hindi kailanman lumalabas '
+            'dito ang iyong mga larawan at teksto.',
+      ),
     );
   }
 
@@ -696,6 +743,44 @@ class _IntroScreenState extends State<IntroScreen>
   // ---------------------------------------------------------------------
   // Bottom bar - page dots + next / get started
   // ---------------------------------------------------------------------
+
+  /// "By continuing, you agree to the Terms of Use and Privacy & Data",
+  /// with both names tappable.
+  Widget _buildLegalNotice() {
+    Widget link(LegalDocument document) => GestureDetector(
+      onTap: () => LegalScreen.open(context, document),
+      child: Text(
+        document.title(context),
+        style: const TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w800,
+          color: _deepBrown,
+          decoration: TextDecoration.underline,
+        ),
+      ),
+    );
+    const plain = TextStyle(fontSize: 12.5, color: Colors.black54);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 4, 28, 0),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 4,
+        children: [
+          Text(
+            context.tr(
+              'By continuing, you agree to the',
+              'Sa pagpapatuloy, sumasang-ayon ka sa',
+            ),
+            style: plain,
+          ),
+          link(LegalDocument.terms),
+          Text(context.tr('and', 'at'), style: plain),
+          link(LegalDocument.privacy),
+        ],
+      ),
+    );
+  }
 
   Widget _buildBottomBar(bool isLast) {
     return Padding(
@@ -757,12 +842,12 @@ class _IntroScreenState extends State<IntroScreen>
                   child: ClipRect(
                     child: Center(
                       child: isLast
-                          ? const Text(
-                              'Get Started',
+                          ? Text(
+                              context.tr('Get Started', 'Magsimula'),
                               maxLines: 1,
                               softWrap: false,
                               overflow: TextOverflow.clip,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 color: _deepBrown,
                                 fontSize: 17,
                                 fontWeight: FontWeight.w900,

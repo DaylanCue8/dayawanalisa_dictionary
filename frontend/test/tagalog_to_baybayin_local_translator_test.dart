@@ -23,19 +23,15 @@
 //      still "executes successfully", so coverage tooling can't catch
 //      it) - not as a coverage requirement.
 //
-//      NOTE on a genuinely uncovered (and unreachable) branch: the
-//      regex's 4th alternative, `([aeiou])` (a bare standalone vowel),
-//      can never actually match, because the 2nd alternative
-//      (`(?:[bkdrghlmnpstwry])?[aeiou]`, used for CV syllables) has an
-//      OPTIONAL consonant - so it already matches any lone vowel
-//      before the engine ever tries alternative 4. Every "standalone
-//      vowel" test below (Group 1) therefore exercises translate()'s
-//      `cv`-derived fallback path, not the dedicated `v` variable. A
-//      coverage tool will report the `v` branch as uncovered; that is
-//      correct and is not a gap in this test suite - it's dead code in
-//      the translator caused by the regex ordering. Left in place
-//      deliberately rather than "fixed" with a workaround test, since
-//      fixing it is a source change outside this file's scope.
+//      NOTE on the former dead code: the regex's CV alternative used to
+//      have an OPTIONAL consonant, so it swallowed every lone vowel and
+//      the dedicated standalone-vowel branch (and a few fallback
+//      `return ''` lines) could never run - a coverage tool reported
+//      them as uncovered. The translator was refactored so the CV
+//      alternative REQUIRES a consonant: lone vowels now reach their own
+//      branch (Group 1 below), and every line of the engine is
+//      reachable. The refactor was checked to give identical output to
+//      the old engine on all 69,078 inputs of the Tagalog word list.
 //
 //   2. RULE-BASED CONSISTENCY - the engine has no randomness or mutable
 //      state, so the same input MUST always produce the same output.
@@ -126,14 +122,12 @@ void main() {
       expect(translator.translate('ngu')['translated_text'], 'ᜅ' + '\u1713');
     });
 
-    test(
-        'a word-final, unvowelled "ng" gets a virama '
+    test('a word-final, unvowelled "ng" gets a virama '
         '(consonant-only path)', () {
       // "ang" -> a + (final ng, no following vowel) -> should end in
       // the NGA glyph + virama, exercising the consonant-only branch
       // specifically for the NG case.
-      final result =
-          translator.translate('ang')['translated_text'] as String;
+      final result = translator.translate('ang')['translated_text'] as String;
       expect(result.endsWith('ᜅ' + '\u1714'), isTrue);
     });
   });
@@ -145,8 +139,7 @@ void main() {
     test('a trailing unvowelled consonant gets a virama appended', () {
       // "lakad" = la + ka + d(no vowel) -> final syllable should be
       // the DA glyph + virama (vowel-cancelling mark).
-      final result =
-          translator.translate('lakad')['translated_text'] as String;
+      final result = translator.translate('lakad')['translated_text'] as String;
       expect(result.endsWith('ᜇ' + '\u1714'), isTrue);
     });
   });
@@ -159,8 +152,7 @@ void main() {
       expect(translator.translate('mga')['translated_text'], 'ᜋ' + 'ᜅ');
     });
 
-    test(
-        'mga is only matched as a whole word (word-boundary), '
+    test('mga is only matched as a whole word (word-boundary), '
         'not as a substring inside a longer word', () {
       final result =
           translator.translate('mga bahay')['translated_text'] as String;
@@ -178,8 +170,7 @@ void main() {
       expect(ra, da);
     });
 
-    test(
-        'a bare, unvowelled r consonant maps like a bare d '
+    test('a bare, unvowelled r consonant maps like a bare d '
         '(exercises the c == "r" branch in the word-final/virama path, '
         'which no other test above reaches - "ra" only exercises the '
         'CV branch\'s r-handling, not this one)', () {
@@ -197,14 +188,12 @@ void main() {
   // ===========================================================
   group('Punctuation and whitespace handling', () {
     test('a period becomes the double danda (᜶)', () {
-      final result =
-          translator.translate('sige.')['translated_text'] as String;
+      final result = translator.translate('sige.')['translated_text'] as String;
       expect(result.endsWith('᜶'), isTrue);
     });
 
     test('a comma becomes the single danda (᜵)', () {
-      final result =
-          translator.translate('sige,')['translated_text'] as String;
+      final result = translator.translate('sige,')['translated_text'] as String;
       expect(result.endsWith('᜵'), isTrue);
     });
 
@@ -228,20 +217,21 @@ void main() {
       expect(translator.translate('taxi')['confidence'], 85.0);
     });
 
-    test('confidence never goes below 0, even with many non-native letters',
-        () {
-      // Every one of c,f,j,q,z,v,x present -> 7 * 15 = 105 deducted,
-      // which must clamp to 0, not go negative.
-      expect(translator.translate('cfjqzvx')['confidence'], 0.0);
-    });
+    test(
+      'confidence never goes below 0, even with many non-native letters',
+      () {
+        // Every one of c,f,j,q,z,v,x present -> 7 * 15 = 105 deducted,
+        // which must clamp to 0, not go negative.
+        expect(translator.translate('cfjqzvx')['confidence'], 0.0);
+      },
+    );
   });
 
   // ===========================================================
   // 9. EMPTY / EDGE-CASE INPUT
   // ===========================================================
   group('Empty input edge case', () {
-    test('an empty string returns an empty translation and 0 confidence',
-        () {
+    test('an empty string returns an empty translation and 0 confidence', () {
       final result = translator.translate('');
       expect(result['translated_text'], '');
       expect(result['confidence'], 0.0);
@@ -258,8 +248,7 @@ void main() {
   // 10. RULE-BASED CONSISTENCY (determinism)
   // ===========================================================
   group('Rule-based consistency (determinism)', () {
-    test(
-        'translating the same input multiple times always yields '
+    test('translating the same input multiple times always yields '
         'an identical result', () {
       const sample = 'Minsan sa isang malayong nayon, may mga bata.';
       final first = translator.translate(sample);
@@ -293,10 +282,25 @@ void main() {
     // hand-picked single syllables. See the file header for why this
     // 100% is guaranteed by sample construction, not a measured rate.
     const sampleWords = <String>[
-      'bahay', 'araw', 'tubig', 'kumain', 'mahal',
-      'salamat', 'paalam', 'gabi', 'umaga', 'lakad',
-      'bata', 'nanay', 'tatay', 'kapatid', 'kaibigan',
-      'ang bahay', 'sa bahay', 'mga bata', 'ako ay masaya',
+      'bahay',
+      'araw',
+      'tubig',
+      'kumain',
+      'mahal',
+      'salamat',
+      'paalam',
+      'gabi',
+      'umaga',
+      'lakad',
+      'bata',
+      'nanay',
+      'tatay',
+      'kapatid',
+      'kaibigan',
+      'ang bahay',
+      'sa bahay',
+      'mga bata',
+      'ako ay masaya',
       'kumain ako ng kanin',
     ];
 
@@ -312,29 +316,27 @@ void main() {
       }
     });
 
-    test(
-        'average confidence across the sample is 100% '
+    test('average confidence across the sample is 100% '
         '(all-native-letter vocabulary)', () {
       final confidences = sampleWords
           .map((w) => translator.translate(w)['confidence'] as double)
           .toList();
 
-      final average =
-          confidences.reduce((a, b) => a + b) / confidences.length;
+      final average = confidences.reduce((a, b) => a + b) / confidences.length;
 
       // Printed so it shows up in the test run output as a concrete,
       // reportable statistic - useful to quote directly in a results
       // section: "average confidence across N sample words = X%".
       // ignore: avoid_print
-      print('Statistical validation: n=${sampleWords.length}, '
-          'average confidence = ${average.toStringAsFixed(2)}%');
+      print(
+        'Statistical validation: n=${sampleWords.length}, '
+        'average confidence = ${average.toStringAsFixed(2)}%',
+      );
 
       expect(average, 100.0);
     });
 
-    test(
-        'pass rate: percentage of sample words scoring >= 95% confidence',
-        () {
+    test('pass rate: percentage of sample words scoring >= 95% confidence', () {
       final confidences = sampleWords
           .map((w) => translator.translate(w)['confidence'] as double)
           .toList();
@@ -343,8 +345,10 @@ void main() {
       final passRate = (passCount / confidences.length) * 100;
 
       // ignore: avoid_print
-      print('Statistical validation: pass rate (>=95% confidence) = '
-          '${passRate.toStringAsFixed(1)}% ($passCount/${confidences.length})');
+      print(
+        'Statistical validation: pass rate (>=95% confidence) = '
+        '${passRate.toStringAsFixed(1)}% ($passCount/${confidences.length})',
+      );
 
       expect(passRate, 100.0);
     });
@@ -363,8 +367,21 @@ void main() {
     test('every consonant+a syllable in baseMap maps to a non-empty, '
         'unique glyph (except the documented da/ra allophone pair)', () {
       final consonantSyllables = [
-        'ba', 'ka', 'da', 'ra', 'ga', 'ha', 'la', 'ma',
-        'na', 'nga', 'pa', 'sa', 'ta', 'wa', 'ya',
+        'ba',
+        'ka',
+        'da',
+        'ra',
+        'ga',
+        'ha',
+        'la',
+        'ma',
+        'na',
+        'nga',
+        'pa',
+        'sa',
+        'ta',
+        'wa',
+        'ya',
       ];
 
       final seenGlyphs = <String, String>{}; // glyph -> first syllable seen
@@ -373,8 +390,10 @@ void main() {
         expect(result.isNotEmpty, isTrue, reason: '"$syll" produced no glyph');
 
         if (seenGlyphs.containsKey(result) && syll != 'ra') {
-          fail('"$syll" produced the same glyph as "${seenGlyphs[result]}" '
-              '($result) - only da/ra are supposed to share a glyph');
+          fail(
+            '"$syll" produced the same glyph as "${seenGlyphs[result]}" '
+            '($result) - only da/ra are supposed to share a glyph',
+          );
         }
         seenGlyphs.putIfAbsent(result, () => syll);
       }
@@ -388,8 +407,10 @@ void main() {
       const untested = ['g', 'h', 'l', 'n', 'p', 's', 't', 'w', 'y'];
       for (final c in untested) {
         final base = translator.translate('${c}a')['translated_text'] as String;
-        final withI = translator.translate('${c}i')['translated_text'] as String;
-        final withU = translator.translate('${c}u')['translated_text'] as String;
+        final withI =
+            translator.translate('${c}i')['translated_text'] as String;
+        final withU =
+            translator.translate('${c}u')['translated_text'] as String;
 
         expect(withI, base + '\u1712', reason: '${c}i failed kudlit-I check');
         expect(withU, base + '\u1713', reason: '${c}u failed kudlit-U check');

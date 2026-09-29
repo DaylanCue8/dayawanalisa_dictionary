@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
+import '../services/app_language.dart';
+
 /// Document-style border adjustment: 4 corner handles that move
 /// independently, so the border can follow the paper's real sides even
 /// when the photo was taken at an angle (the paper then looks like a
@@ -98,7 +100,14 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
     if (cropped == null) {
       setState(() => _isCropping = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not crop the image. Please try again.')),
+        SnackBar(
+          content: Text(
+            tr(
+              'Could not crop the image. Please try again.',
+              'Hindi ma-crop ang larawan. Pakisubukan muli.',
+            ),
+          ),
+        ),
       );
       return;
     }
@@ -130,14 +139,17 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         elevation: 0,
-        title: const Text('Adjust Border', style: TextStyle(color: Colors.white)),
+        title: Text(
+          context.tr('Adjust Border', 'Ayusin ang Gilid'),
+          style: const TextStyle(color: Colors.white),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.close, color: Colors.white),
           onPressed: () => Navigator.of(context).pop(),
         ),
         actions: [
           IconButton(
-            tooltip: 'Use whole image',
+            tooltip: context.tr('Use whole image', 'Gamitin ang buong larawan'),
             icon: const Icon(Icons.fullscreen, color: Colors.white),
             onPressed: (_isDetecting || _isCropping)
                 ? null
@@ -145,19 +157,25 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
           ),
           TextButton(
             onPressed: (_isDetecting || _isCropping) ? null : _apply,
-            child: const Text('Apply', style: TextStyle(color: Colors.white, fontSize: 16)),
+            child: Text(
+              context.tr('Apply', 'Ilapat'),
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
           ),
         ],
       ),
       body: SafeArea(
         child: _isDetecting
-            ? const Center(
+            ? Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(color: Colors.white),
-                    SizedBox(height: 12),
-                    Text('Finding the paper…', style: TextStyle(color: Colors.white70)),
+                    const CircularProgressIndicator(color: Colors.white),
+                    const SizedBox(height: 12),
+                    Text(
+                      context.tr('Finding the paper…', 'Hinahanap ang papel…'),
+                      style: const TextStyle(color: Colors.white70),
+                    ),
                   ],
                 ),
               )
@@ -167,10 +185,19 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
                     child: Text(
                       _detectMode == 'text'
-                          ? 'Writing detected - drag the corners to adjust'
+                          ? context.tr(
+                              'Writing detected - drag the corners to adjust',
+                              'Nakita ang sulat - hilahin ang mga sulok para ayusin',
+                            )
                           : _detectMode == 'paper'
-                              ? 'Paper detected - drag the corners to adjust'
-                              : 'Drag the corners around the writing',
+                          ? context.tr(
+                              'Paper detected - drag the corners to adjust',
+                              'Nakita ang papel - hilahin ang mga sulok para ayusin',
+                            )
+                          : context.tr(
+                              'Drag the corners around the writing',
+                              'Hilahin ang mga sulok palibot sa sulat',
+                            ),
                       style: const TextStyle(color: Colors.white, fontSize: 13),
                       textAlign: TextAlign.center,
                     ),

@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Python test tools: generated reports and smoke-test images
+/test_python/reports/
+/test_python/synthetic_glyphs/
+/test_python/__pycache__/

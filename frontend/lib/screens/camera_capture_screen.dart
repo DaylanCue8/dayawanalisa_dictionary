@@ -1,11 +1,12 @@
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:sensors_plus/sensors_plus.dart';
 
+import '../services/app_language.dart';
 import '../services/app_settings.dart';
 import '../widgets/liquid_glass_selector.dart';
 
@@ -29,20 +30,34 @@ import '../widgets/liquid_glass_selector.dart';
 /// button and stability-based auto-capture - since both go through
 /// the same _capture() -> takePicture() call.
 ///
+/// Multi-page mode keeps the camera open: every capture (manual or
+/// auto) is added as a page after the same crop + blur check, and "Done"
+/// returns them all at once.
+///
 /// Returns the captured, cropped JPEG bytes and selected input type via
 /// Navigator.pop, or null if the user backs out without capturing.
 class CameraCaptureResult {
+  /// The first (or only) page.
   final Uint8List imageBytes;
   final String inputType;
 
-  const CameraCaptureResult({
+  /// Every page in capture order; just [imageBytes] for a single shot.
+  final List<Uint8List> pages;
+
+  CameraCaptureResult({
     required this.imageBytes,
     required this.inputType,
-  });
+    List<Uint8List>? pages,
+  }) : pages = pages ?? [imageBytes];
+
+  bool get isMultiPage => pages.length > 1;
 }
 
 class CameraCaptureScreen extends StatefulWidget {
   const CameraCaptureScreen({super.key});
+
+  /// Most pages one multi-page scan can hold (memory + reading time).
+  static const int maxPages = 10;
 
   @override
   State<CameraCaptureScreen> createState() => _CameraCaptureScreenState();
@@ -123,6 +138,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   bool _gridEnabled = AppSettings.instance.cameraGridByDefault;
   bool _multiPageEnabled = false;
 
+  // ---- Multi-page ----
+  // Pages captured so far in this session (cropped JPEGs, in order).
+  final List<Uint8List> _pages = [];
+  static const int _maxPages = CameraCaptureScreen.maxPages;
+  bool get _atPageLimit => _multiPageEnabled && _pages.length >= _maxPages;
+  // After a page is added, auto-capture stays spent until the phone
+  // moves (steadiness drops below the threshold) - i.e. the user is
+  // lining up the next page - so it can't fire twice on the same one.
+  bool _rearmAfterMovement = false;
+
   static const Color _accentColor = Color(0xFFFFFF00);
 
   @override
@@ -136,7 +161,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        setState(() => _error = 'No camera found on this device.');
+        setState(
+          () => _error = tr(
+            'No camera found on this device.',
+            'Walang nakitang kamera sa device na ito.',
+          ),
+        );
         return;
       }
       final backCamera = cameras.firstWhere(
@@ -174,7 +204,12 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
       });
       setState(() {});
     } catch (e) {
-      setState(() => _error = 'Failed to start camera: $e');
+      setState(
+        () => _error = tr(
+          'Failed to start camera: $e',
+          'Hindi mabuksan ang kamera: $e',
+        ),
+      );
     }
   }
 
@@ -196,7 +231,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text('Flash: ${_flashLabel(nextMode)}'),
+            content: Text('${tr('Flash', 'Flash')}: ${_flashLabel(nextMode)}'),
             duration: const Duration(milliseconds: 900),
           ),
         );
@@ -210,7 +245,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         ..showSnackBar(
           SnackBar(
             content: Text(
-              'Flash "${_flashLabel(nextMode)}" is not supported on this device',
+              tr(
+                'Flash "${_flashLabel(nextMode)}" is not supported on this device',
+                'Hindi suportado ng device na ito ang flash na "${_flashLabel(nextMode)}"',
+              ),
             ),
             duration: const Duration(seconds: 2),
           ),
@@ -234,13 +272,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   String _flashLabel(FlashMode mode) {
     switch (mode) {
       case FlashMode.off:
-        return 'Off';
+        return tr('Off', 'Patay');
       case FlashMode.auto:
-        return 'Auto';
+        return tr('Auto', 'Awtomatiko');
       case FlashMode.always:
-        return 'On';
+        return tr('On', 'Bukas');
       case FlashMode.torch:
-        return 'Light (always on)';
+        return tr('Light (always on)', 'Ilaw (laging bukas)');
     }
   }
 
@@ -284,7 +322,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
               color: _gridEnabled ? _accentColor : Colors.white70,
               size: 18,
             ),
-            label: const Text('Grid'),
+            label: Text(context.tr('Grid', 'Grid')),
           ),
           const SizedBox(width: 4),
           Container(
@@ -305,7 +343,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                 onChanged: (i) =>
                     setState(() => _cameraInputType = _inputTypes[i].$1),
                 itemBuilder: (context, i, selectedness) => Text(
-                  _inputTypes[i].$2,
+                  context.tr(_inputTypes[i].$2, _inputTypes[i].$3),
                   style: TextStyle(
                     color: Color.lerp(
                       Colors.white70,
@@ -324,9 +362,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     );
   }
 
-  static const List<(String, String)> _inputTypes = [
-    ('marker', 'Marker'),
-    ('pen', 'Pen'),
+  // (key, English, Filipino)
+  static const List<(String, String, String)> _inputTypes = [
+    ('marker', 'Marker', 'Marker'),
+    ('pen', 'Pen', 'Bolpen'),
   ];
 
   Widget _buildBottomControl({
@@ -381,7 +420,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         borderRadius: BorderRadius.circular(16),
       ),
       child: TextButton.icon(
-        onPressed: () => setState(() => _multiPageEnabled = !_multiPageEnabled),
+        onPressed: _toggleMultiPage,
         style: ButtonStyle(
           foregroundColor: WidgetStatePropertyAll(
             _multiPageEnabled ? Colors.black87 : Colors.white,
@@ -395,7 +434,210 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
           color: _multiPageEnabled ? Colors.black87 : Colors.white,
           size: 20,
         ),
-        label: const Text('Multi-page', style: TextStyle(fontSize: 12)),
+        label: Text(
+          context.tr('Multi-page', 'Maraming pahina'),
+          style: const TextStyle(fontSize: 12),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleMultiPage() async {
+    if (_multiPageEnabled && _pages.isNotEmpty) {
+      if (!await _confirmDiscardPages()) return;
+      _pages.clear();
+    }
+    if (!mounted) return;
+    setState(() {
+      _multiPageEnabled = !_multiPageEnabled;
+      _rearmAfterMovement = false;
+      _autoCaptureFired = false;
+      _stableSince = null;
+    });
+  }
+
+  Future<bool> _confirmDiscardPages() async {
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          context.tr(
+            'Discard ${_pages.length} '
+                '${_pages.length == 1 ? 'page' : 'pages'}?',
+            'Itapon ang ${_pages.length} pahina?',
+          ),
+        ),
+        content: Text(
+          context.tr(
+            'The pages you captured will be lost.',
+            'Mawawala ang mga pahinang kinuhanan mo.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(context.tr('Keep', 'Itabi')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(context.tr('Discard', 'Itapon')),
+          ),
+        ],
+      ),
+    );
+    return discard == true;
+  }
+
+  Future<void> _close() async {
+    if (_pages.isNotEmpty && !await _confirmDiscardPages()) return;
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  void _finishMultiPage() {
+    if (_pages.isEmpty) return;
+    Navigator.of(context).pop<CameraCaptureResult>(
+      CameraCaptureResult(
+        imageBytes: _pages.first,
+        inputType: _cameraInputType,
+        pages: List.of(_pages),
+      ),
+    );
+  }
+
+  void _removePage(int index) {
+    setState(() => _pages.removeAt(index));
+  }
+
+  /// Thumbnails of the pages captured so far; tap the x to remove one.
+  Widget _buildPageStrip() {
+    return SizedBox(
+      height: 76,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _pages.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, i) => Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              width: 54,
+              height: 72,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Image.memory(
+                  _pages[i],
+                  fit: BoxFit.cover,
+                  cacheWidth: 160,
+                  gaplessPlayback: true,
+                ),
+              ),
+            ),
+            Positioned(
+              left: 4,
+              bottom: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '${i + 1}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              right: -6,
+              top: -6,
+              child: GestureDetector(
+                onTap: () => _removePage(i),
+                child: Container(
+                  width: 22,
+                  height: 22,
+                  decoration: const BoxDecoration(
+                    color: Colors.black87,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close, color: Colors.white, size: 14),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Shown when the 10th page is added, and whenever another capture is
+  /// attempted while full. Offers to read the pages right away.
+  Future<void> _showPageLimitDialog() async {
+    if (!mounted) return;
+    final readNow = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.auto_stories_outlined),
+        title: Text(
+          context.tr('Page limit reached', 'Naabot na ang limitasyon'),
+        ),
+        content: Text(
+          context.tr(
+            'You have $_maxPages of $_maxPages pages, the most one scan can '
+                'hold. Read them now, or remove a page to take another.',
+            'Mayroon ka nang $_maxPages sa $_maxPages pahina, ang pinakamarami '
+                'sa isang scan. Basahin na ang mga ito, o mag-alis ng pahina '
+                'para kumuha ng bago.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(context.tr('Review pages', 'Suriin ang mga pahina')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(context.tr('Read pages', 'Basahin ang mga pahina')),
+          ),
+        ],
+      ),
+    );
+    if (readNow == true) _finishMultiPage();
+  }
+
+  /// "Done" pill next to the shutter, shown once a page is captured.
+  Widget _buildDoneButton() {
+    return GestureDetector(
+      onTap: _isCapturing ? null : _finishMultiPage,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: _accentColor,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.check, color: Colors.black87, size: 18),
+            const SizedBox(width: 4),
+            Text(
+              '${context.tr('Done', 'Tapos')} · ${_pages.length}/$_maxPages',
+              style: const TextStyle(
+                color: Colors.black87,
+                fontWeight: FontWeight.w800,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -449,12 +691,18 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
       if (_autoCaptureEnabled &&
           !_autoCaptureFired &&
           !_isCapturing &&
+          // Full: don't keep auto-firing into the limit notice.
+          !_atPageLimit &&
           heldFor >= _requiredHoldDuration) {
         _autoCaptureFired = true;
         _capture();
       }
     } else {
       _stableSince = null;
+      if (_rearmAfterMovement) {
+        _rearmAfterMovement = false;
+        _autoCaptureFired = false;
+      }
     }
   }
 
@@ -524,16 +772,21 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     await showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Photo is too blurry'),
-        content: const Text(
-          'This photo looks blurry, which will make the handwriting '
-          'hard to read correctly. Please hold the phone steady, make '
-          'sure the page is well lit, and try again.',
+        title: Text(context.tr('Photo is too blurry', 'Malabo ang larawan')),
+        content: Text(
+          context.tr(
+            'This photo looks blurry, which will make the handwriting '
+                'hard to read correctly. Please hold the phone steady, make '
+                'sure the page is well lit, and try again.',
+            'Malabo ang larawang ito, kaya mahihirapang basahin nang tama '
+                'ang sulat-kamay. Hawakan nang matatag ang phone, siguraduhing '
+                'maliwanag ang pahina, at subukan muli.',
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Retake'),
+            child: Text(context.tr('Retake', 'Kunan muli')),
           ),
         ],
       ),
@@ -544,6 +797,10 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _isCapturing)
       return;
+    if (_atPageLimit) {
+      await _showPageLimitDialog();
+      return;
+    }
 
     setState(() => _isCapturing = true);
     try {
@@ -561,7 +818,14 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
             _stableSince = null;
           });
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not read the captured photo.')),
+            SnackBar(
+              content: Text(
+                tr(
+                  'Could not read the captured photo.',
+                  'Hindi mabasa ang kinuhang larawan.',
+                ),
+              ),
+            ),
           );
         }
         return;
@@ -598,6 +862,44 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         img.encodeJpg(cropped, quality: 95),
       );
       if (!mounted) return;
+      if (_multiPageEnabled) {
+        setState(() {
+          _pages.add(croppedBytes);
+          _isCapturing = false;
+          // Spent until the phone moves on to the next page.
+          _autoCaptureFired = true;
+          _rearmAfterMovement = true;
+          _stableSince = null;
+        });
+        final count = _pages.length;
+        final left = _maxPages - count;
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        if (left <= 0) {
+          // Just hit the limit: say so right away, not on the next tap.
+          if (AppSettings.instance.hapticsEnabled) {
+            HapticFeedback.heavyImpact();
+          }
+          await _showPageLimitDialog();
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              left == 1
+                  ? tr(
+                      'Page $count added. 1 page left.',
+                      'Naidagdag ang pahina $count. 1 pahina na lang.',
+                    )
+                  : tr(
+                      'Page $count of $_maxPages added',
+                      'Naidagdag ang pahina $count ng $_maxPages',
+                    ),
+            ),
+            duration: Duration(milliseconds: left == 1 ? 2000 : 900),
+          ),
+        );
+        return;
+      }
       Navigator.of(context).pop<CameraCaptureResult>(
         CameraCaptureResult(
           imageBytes: croppedBytes,
@@ -615,9 +917,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
           _autoCaptureFired = false;
           _stableSince = null;
         });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Capture failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              tr('Capture failed: $e', 'Hindi nakakuha ng larawan: $e'),
+            ),
+          ),
+        );
       }
     }
   }
@@ -641,7 +947,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     if (_error != null) {
       return Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(title: const Text('Camera')),
+        appBar: AppBar(title: Text(context.tr('Camera', 'Kamera'))),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -666,207 +972,263 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     final isSteady = _stabilityPercent >= _autoCaptureThreshold;
     final flashIsActive = _flashMode != FlashMode.off;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: FutureBuilder<void>(
-          future: _initializeControllerFuture,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
-              return const Center(
-                child: CircularProgressIndicator(color: Colors.white),
-              );
-            }
-            return LayoutBuilder(
-              builder: (context, constraints) {
-                return Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    GestureDetector(
-                      onTapDown: (details) =>
-                          _onTapToFocus(details, constraints),
-                      child: CameraPreview(controller),
-                    ),
-                    // Framing guide - this is now the ACTUAL crop
-                    // boundary, applied to the captured photo right
-                    // after takePicture(). Keep _guideWidthFactor /
-                    // _guideHeightFactor above in sync with these
-                    // FractionallySizedBox values if you change either.
-                    IgnorePointer(
-                      child: Center(
-                        child: FractionallySizedBox(
-                          widthFactor: _guideWidthFactor,
-                          heightFactor: _guideHeightFactor,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: Colors.white70,
-                                width: 2,
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (_focusPoint != null)
-                      Positioned(
-                        left: _focusPoint!.dx - 20,
-                        top: _focusPoint!.dy - 20,
-                        child: IgnorePointer(
-                          child: Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                color: Colors.yellow,
-                                width: 2,
-                              ),
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ),
-                      ),
-                    Positioned(
-                      top: 8,
-                      left: 8,
-                      child: IconButton(
-                        icon: const Icon(
-                          Icons.close,
-                          color: Colors.white,
-                          size: 28,
-                        ),
-                        onPressed: () => Navigator.of(context).pop(),
-                      ),
-                    ),
-                    Positioned(
-                      top: 10,
-                      left: 0,
-                      right: 0,
-                      child: Center(child: _buildCameraLogo()),
-                    ),
-                    Positioned(
-                      top: 58,
-                      left: 0,
-                      right: 0,
-                      child: Center(child: _buildTopControls()),
-                    ),
-                    Positioned(
-                      bottom: 24,
-                      left: 0,
-                      right: 0,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (_flashSupported)
-                                _buildBottomControl(
-                                  icon: _flashIcon(_flashMode),
-                                  label: 'Flashlight',
-                                  active: flashIsActive,
-                                  onPressed: _isCapturing
-                                      ? null
-                                      : _cycleFlashMode,
-                                ),
-                              const SizedBox(width: 16),
-                              _buildBottomControl(
-                                icon: _autoCaptureEnabled
-                                    ? Icons.bolt
-                                    : Icons.bolt_outlined,
-                                label: 'Auto-detect',
-                                active: _autoCaptureEnabled,
-                                onPressed: () {
-                                  setState(() {
-                                    _autoCaptureEnabled = !_autoCaptureEnabled;
-                                    _stableSince = null;
-                                    _autoCaptureFired = false;
-                                  });
-                                },
-                              ),
-                              const SizedBox(width: 16),
-                              _buildMultiPageControl(),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-                          if (_autoCaptureEnabled && !_isCapturing)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: Text(
-                                isSteady
-                                    ? 'Hold steady…'
-                                    : 'Steadying: ${_stabilityPercent.round()}%',
-                                style: TextStyle(
-                                  color: isSteady
-                                      ? Colors.greenAccent
-                                      : Colors.white70,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          Center(
-                            child: GestureDetector(
-                              onTap: _isCapturing ? null : _capture,
-                              child: SizedBox(
-                                width: 84,
-                                height: 84,
-                                child: Stack(
-                                  alignment: Alignment.center,
-                                  children: [
-                                    if (_autoCaptureEnabled)
-                                      SizedBox(
-                                        width: 84,
-                                        height: 84,
-                                        child: CircularProgressIndicator(
-                                          value: (_stabilityPercent / 100)
-                                              .clamp(0.0, 1.0),
-                                          strokeWidth: 4,
-                                          backgroundColor: Colors.white24,
-                                          valueColor:
-                                              AlwaysStoppedAnimation<Color>(
-                                                isSteady
-                                                    ? Colors.greenAccent
-                                                    : Colors.orangeAccent,
-                                              ),
-                                        ),
-                                      ),
-                                    Container(
-                                      width: 72,
-                                      height: 72,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: Colors.white,
-                                          width: 4,
-                                        ),
-                                        color: _isCapturing
-                                            ? Colors.grey
-                                            : Colors.white24,
-                                      ),
-                                      child: _isCapturing
-                                          ? const Padding(
-                                              padding: EdgeInsets.all(20),
-                                              child: CircularProgressIndicator(
-                                                color: Colors.white,
-                                              ),
-                                            )
-                                          : null,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+    return PopScope(
+      canPop: _pages.isEmpty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _close();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: FutureBuilder<void>(
+            future: _initializeControllerFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
                 );
-              },
-            );
-          },
+              }
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      GestureDetector(
+                        onTapDown: (details) =>
+                            _onTapToFocus(details, constraints),
+                        child: CameraPreview(controller),
+                      ),
+                      // Framing guide - this is now the ACTUAL crop
+                      // boundary, applied to the captured photo right
+                      // after takePicture(). Keep _guideWidthFactor /
+                      // _guideHeightFactor above in sync with these
+                      // FractionallySizedBox values if you change either.
+                      IgnorePointer(
+                        child: Center(
+                          child: FractionallySizedBox(
+                            widthFactor: _guideWidthFactor,
+                            heightFactor: _guideHeightFactor,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: Colors.white70,
+                                  width: 2,
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (_focusPoint != null)
+                        Positioned(
+                          left: _focusPoint!.dx - 20,
+                          top: _focusPoint!.dy - 20,
+                          child: IgnorePointer(
+                            child: Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: Colors.yellow,
+                                  width: 2,
+                                ),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                        ),
+                      Positioned(
+                        top: 8,
+                        left: 8,
+                        child: IconButton(
+                          icon: const Icon(
+                            Icons.close,
+                            color: Colors.white,
+                            size: 28,
+                          ),
+                          onPressed: _close,
+                        ),
+                      ),
+                      Positioned(
+                        top: 10,
+                        left: 0,
+                        right: 0,
+                        child: Center(child: _buildCameraLogo()),
+                      ),
+                      Positioned(
+                        top: 58,
+                        left: 0,
+                        right: 0,
+                        child: Center(child: _buildTopControls()),
+                      ),
+                      Positioned(
+                        bottom: 24,
+                        left: 0,
+                        right: 0,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_multiPageEnabled && _pages.isNotEmpty) ...[
+                              _buildPageStrip(),
+                              const SizedBox(height: 12),
+                            ],
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                if (_flashSupported)
+                                  _buildBottomControl(
+                                    icon: _flashIcon(_flashMode),
+                                    label: context.tr(
+                                      'Flashlight',
+                                      'Flashlight',
+                                    ),
+                                    active: flashIsActive,
+                                    onPressed: _isCapturing
+                                        ? null
+                                        : _cycleFlashMode,
+                                  ),
+                                const SizedBox(width: 16),
+                                _buildBottomControl(
+                                  icon: _autoCaptureEnabled
+                                      ? Icons.bolt
+                                      : Icons.bolt_outlined,
+                                  label: context.tr(
+                                    'Auto-detect',
+                                    'Awtomatiko',
+                                  ),
+                                  active: _autoCaptureEnabled,
+                                  onPressed: () {
+                                    setState(() {
+                                      _autoCaptureEnabled =
+                                          !_autoCaptureEnabled;
+                                      _stableSince = null;
+                                      _autoCaptureFired = false;
+                                    });
+                                  },
+                                ),
+                                const SizedBox(width: 16),
+                                _buildMultiPageControl(),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+                            if (_atPageLimit)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: Text(
+                                  context.tr(
+                                    'Page limit reached ($_maxPages/$_maxPages)',
+                                    'Naabot na ang limitasyon ($_maxPages/$_maxPages)',
+                                  ),
+                                  style: const TextStyle(
+                                    color: Colors.orangeAccent,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              )
+                            else if (_autoCaptureEnabled && !_isCapturing)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: Text(
+                                  isSteady
+                                      ? context.tr(
+                                          'Hold steady…',
+                                          'Huwag gumalaw…',
+                                        )
+                                      : context.tr(
+                                          'Steadying: ${_stabilityPercent.round()}%',
+                                          'Pinapatatag: ${_stabilityPercent.round()}%',
+                                        ),
+                                  style: TextStyle(
+                                    color: isSteady
+                                        ? Colors.greenAccent
+                                        : Colors.white70,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            Row(
+                              children: [
+                                const Expanded(child: SizedBox()),
+                                GestureDetector(
+                                  onTap: _isCapturing ? null : _capture,
+                                  child: SizedBox(
+                                    width: 84,
+                                    height: 84,
+                                    child: Stack(
+                                      alignment: Alignment.center,
+                                      children: [
+                                        if (_autoCaptureEnabled)
+                                          SizedBox(
+                                            width: 84,
+                                            height: 84,
+                                            child: CircularProgressIndicator(
+                                              value: (_stabilityPercent / 100)
+                                                  .clamp(0.0, 1.0),
+                                              strokeWidth: 4,
+                                              backgroundColor: Colors.white24,
+                                              valueColor:
+                                                  AlwaysStoppedAnimation<Color>(
+                                                    isSteady
+                                                        ? Colors.greenAccent
+                                                        : Colors.orangeAccent,
+                                                  ),
+                                            ),
+                                          ),
+                                        Container(
+                                          width: 72,
+                                          height: 72,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 4,
+                                            ),
+                                            color: _isCapturing || _atPageLimit
+                                                ? Colors.grey
+                                                : Colors.white24,
+                                          ),
+                                          child: _isCapturing
+                                              ? const Padding(
+                                                  padding: EdgeInsets.all(20),
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                        color: Colors.white,
+                                                      ),
+                                                )
+                                              : _atPageLimit
+                                              ? const Icon(
+                                                  Icons.lock_outline,
+                                                  color: Colors.white,
+                                                  size: 28,
+                                                )
+                                              : null,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Center(
+                                    child:
+                                        _multiPageEnabled && _pages.isNotEmpty
+                                        ? _buildDoneButton()
+                                        : const SizedBox(),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
         ),
       ),
     );

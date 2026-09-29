@@ -1,18 +1,41 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../services/app_language.dart';
 import '../services/app_settings.dart';
+import '../widgets/dayaw_style.dart';
 import '../widgets/glass.dart';
 import '../widgets/info_modal.dart';
 import '../widgets/liquid_glass_selector.dart';
 import 'intro_screen.dart';
+import 'legal_screen.dart';
 
 /// iOS-style grouped settings, each group a frosted glass card. Every
-/// value is saved on the device (see [AppSettings]).
-class SettingsScreen extends StatelessWidget {
+/// value is saved on the device (see [AppSettings]). Shares the
+/// translator tabs' look: shimmering hero header, honey section titles
+/// and one calm brown icon style.
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
   static const String appVersion = '1.0.0';
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen>
+    with SingleTickerProviderStateMixin {
+  /// Drives the header shimmer, same timing as the translator tabs.
+  late final AnimationController _ambient = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 3200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _ambient.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -20,32 +43,37 @@ class SettingsScreen extends StatelessWidget {
     return ListenableBuilder(
       listenable: settings,
       builder: (context, _) => ListView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(4, 0, 4, 12),
-            child: Text(
-              'Settings',
-              style: TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-                color: Colors.brown,
-              ),
+          DayawHeroHeader(
+            title: context.tr('Settings', 'Mga Setting'),
+            subtitle: context.tr(
+              'Make Dayaw work the way you read and write.',
+              'Iayon ang Dayaw sa paraan mo ng pagbasa at pagsulat.',
             ),
+            baybayin: 'ᜀᜌᜓᜐᜒᜈ᜔',
+            shimmer: _ambient,
           ),
+          const SizedBox(height: 20),
 
           _Section(
-            title: 'Camera',
+            title: context.tr('Camera', 'Kamera'),
+            icon: Icons.camera_alt_outlined,
             children: [
               _Tile(
                 icon: Icons.edit_outlined,
-                iconColor: Colors.orange,
-                title: 'Default input',
-                subtitle: 'What the camera starts on',
+                title: context.tr('Default input', 'Default na panulat'),
+                subtitle: context.tr(
+                  'What the camera starts on',
+                  'Unang gamit ng kamera',
+                ),
                 trailing: SizedBox(
                   width: 128,
                   child: _SmallSelector(
-                    labels: const ['Marker', 'Pen'],
+                    labels: [
+                      context.tr('Marker', 'Marker'),
+                      context.tr('Pen', 'Bolpen'),
+                    ],
                     selectedIndex: settings.cameraInputType == 'pen' ? 1 : 0,
                     onChanged: (i) =>
                         settings.cameraInputType = i == 1 ? 'pen' : 'marker',
@@ -54,8 +82,10 @@ class SettingsScreen extends StatelessWidget {
               ),
               _SwitchTile(
                 icon: Icons.grid_4x4,
-                iconColor: Colors.teal,
-                title: 'Show grid by default',
+                title: context.tr(
+                  'Show grid by default',
+                  'Ipakita ang grid sa simula',
+                ),
                 value: settings.cameraGridByDefault,
                 onChanged: (v) => settings.cameraGridByDefault = v,
               ),
@@ -63,14 +93,18 @@ class SettingsScreen extends StatelessWidget {
           ),
 
           _Section(
-            title: 'Results',
+            title: context.tr('Results', 'Mga Resulta'),
+            icon: Icons.grid_view_rounded,
             children: [
               _Tile(
                 icon: Icons.filter_b_and_w_outlined,
-                iconColor: Colors.indigo,
-                title: 'Default filter',
+                title: context.tr('Default filter', 'Default na filter'),
                 below: _SmallSelector(
-                  labels: const ['Raw', 'Black and White', 'HOG'],
+                  labels: [
+                    context.tr('Raw', 'Orihinal'),
+                    context.tr('Black and White', 'Itim at Puti'),
+                    'HOG',
+                  ],
                   selectedIndex: const [
                     'Raw',
                     'Black and White',
@@ -85,29 +119,38 @@ class SettingsScreen extends StatelessWidget {
               ),
               _SwitchTile(
                 icon: Icons.crop_free,
-                iconColor: Colors.green,
-                title: 'Show bounding boxes by default',
+                title: context.tr(
+                  'Show bounding boxes by default',
+                  'Ipakita ang mga bounding box sa simula',
+                ),
                 value: settings.showBoundingBoxesByDefault,
                 onChanged: (v) => settings.showBoundingBoxesByDefault = v,
               ),
               _Tile(
                 icon: Icons.tune,
-                iconColor: Colors.red,
-                title: 'Minimum confidence',
-                subtitle: 'Hide characters the model is less sure about',
+                title: context.tr(
+                  'Minimum confidence',
+                  'Pinakamababang kumpiyansa',
+                ),
+                subtitle: context.tr(
+                  'Hide characters the model is less sure about',
+                  'Itago ang mga karakter na hindi gaanong sigurado ang model',
+                ),
                 trailing: Text(
                   '${settings.minConfidence.round()}%',
                   style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.brown,
+                    fontWeight: FontWeight.w700,
+                    color: DayawColors.deepBrown,
                   ),
                 ),
                 below: SliderTheme(
                   data: SliderTheme.of(context).copyWith(
-                    activeTrackColor: Colors.brown,
-                    inactiveTrackColor: Colors.brown.withValues(alpha: 0.15),
+                    activeTrackColor: DayawColors.deepBrown,
+                    inactiveTrackColor: DayawColors.yellow.withValues(
+                      alpha: 0.45,
+                    ),
                     thumbColor: Colors.white,
-                    overlayColor: Colors.brown.withValues(alpha: 0.1),
+                    overlayColor: DayawColors.amber.withValues(alpha: 0.15),
                     trackHeight: 4,
                   ),
                   child: Slider(
@@ -123,21 +166,43 @@ class SettingsScreen extends StatelessWidget {
           ),
 
           _Section(
-            title: 'Experience',
+            title: context.tr('Experience', 'Karanasan'),
+            icon: Icons.auto_awesome,
             children: [
+              _Tile(
+                icon: Icons.language,
+                title: context.tr('Language', 'Lengwahe'),
+                trailing: SizedBox(
+                  width: 150,
+                  child: _SmallSelector(
+                    labels: [for (final (_, name) in appLanguages) name],
+                    selectedIndex: appLanguages
+                        .indexWhere((l) => l.$1 == settings.language)
+                        .clamp(0, appLanguages.length - 1),
+                    onChanged: (i) => settings.language = appLanguages[i].$1,
+                  ),
+                ),
+              ),
               _SwitchTile(
                 icon: Icons.vibration,
-                iconColor: Colors.purple,
-                title: 'Haptic feedback',
-                subtitle: 'Vibrate when switching tabs and filters',
+                title: context.tr('Haptic feedback', 'Pag-vibrate'),
+                subtitle: context.tr(
+                  'Vibrate on taps, tabs, filters and copying',
+                  'Mag-vibrate sa pag-tap, tab, filter at pagkopya',
+                ),
                 value: settings.hapticsEnabled,
                 onChanged: (v) => settings.hapticsEnabled = v,
               ),
               _SwitchTile(
                 icon: Icons.blur_off,
-                iconColor: Colors.blueGrey,
-                title: 'Reduce transparency',
-                subtitle: 'Solid panels instead of frosted glass',
+                title: context.tr(
+                  'Reduce transparency',
+                  'Bawasan ang transparency',
+                ),
+                subtitle: context.tr(
+                  'Solid panels instead of frosted glass',
+                  'Solidong panel sa halip na malabong salamin',
+                ),
                 value: settings.reduceTransparency,
                 onChanged: (v) => settings.reduceTransparency = v,
               ),
@@ -145,13 +210,16 @@ class SettingsScreen extends StatelessWidget {
           ),
 
           _Section(
-            title: 'About',
+            title: context.tr('About', 'Tungkol'),
+            icon: Icons.info_outline,
             children: [
               _Tile(
-                icon: Icons.info_outline,
-                iconColor: Colors.brown,
-                title: 'About Dayaw',
-                subtitle: 'The project and how to write for Baybayin',
+                icon: Icons.menu_book_outlined,
+                title: context.tr('About Dayaw', 'Tungkol sa Dayaw'),
+                subtitle: context.tr(
+                  'The project and how to write for Baybayin',
+                  'Ang proyekto at kung paano sumulat para sa Baybayin',
+                ),
                 showChevron: true,
                 onTap: () => showModalBottomSheet(
                   context: context,
@@ -160,10 +228,16 @@ class SettingsScreen extends StatelessWidget {
                   builder: (context) => const InfoModal(),
                 ),
               ),
+              for (final document in LegalDocument.values)
+                _Tile(
+                  icon: document.icon,
+                  title: document.title(context),
+                  showChevron: true,
+                  onTap: () => LegalScreen.open(context, document),
+                ),
               _Tile(
                 icon: Icons.auto_awesome,
-                iconColor: const Color(0xFFFFB300),
-                title: 'Show introduction',
+                title: context.tr('Show introduction', 'Ipakita ang panimula'),
                 showChevron: true,
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
@@ -173,15 +247,16 @@ class SettingsScreen extends StatelessWidget {
               ),
               _Tile(
                 icon: Icons.table_chart_outlined,
-                iconColor: Colors.amber.shade800,
-                title: 'Baybayin chart',
+                title: context.tr('Baybayin chart', 'Tsart ng Baybayin'),
                 showChevron: true,
                 onTap: () => _showChart(context),
               ),
               _Tile(
                 icon: Icons.description_outlined,
-                iconColor: Colors.grey,
-                title: 'Open-source licenses',
+                title: context.tr(
+                  'Open-source licenses',
+                  'Mga open-source na lisensya',
+                ),
                 showChevron: true,
                 // Left empty for now; swap back to showLicensePage(...) to
                 // list the packages' licenses.
@@ -191,12 +266,11 @@ class SettingsScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              const _Tile(
+              _Tile(
                 icon: Icons.verified_outlined,
-                iconColor: Colors.blue,
-                title: 'Version',
-                trailing: Text(
-                  appVersion,
+                title: context.tr('Version', 'Bersyon'),
+                trailing: const Text(
+                  SettingsScreen.appVersion,
                   style: TextStyle(color: Colors.black54),
                 ),
               ),
@@ -207,19 +281,21 @@ class SettingsScreen extends StatelessWidget {
             children: [
               _Tile(
                 icon: Icons.restart_alt,
-                iconColor: Colors.red,
-                title: 'Reset settings',
-                titleColor: Colors.red,
+                title: context.tr('Reset settings', 'I-reset ang mga setting'),
+                destructive: true,
                 onTap: () => _confirmReset(context),
               ),
             ],
           ),
 
-          const SizedBox(height: 8),
-          const Center(
+          const SizedBox(height: 4),
+          Center(
             child: Text(
-              '© 2026 DAYAW. All rights reserved.',
-              style: TextStyle(fontSize: 11, color: Colors.grey),
+              context.tr(
+                '© 2026 DAYAW. All rights reserved.',
+                '© 2026 DAYAW. Nakalaan ang lahat ng karapatan.',
+              ),
+              style: const TextStyle(fontSize: 11, color: Colors.grey),
             ),
           ),
         ],
@@ -232,7 +308,7 @@ class SettingsScreen extends StatelessWidget {
       context: context,
       builder: (context) => Dialog(
         insetPadding: const EdgeInsets.all(16),
-        backgroundColor: Colors.white,
+        backgroundColor: DayawColors.cream,
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Column(
@@ -244,7 +320,10 @@ class SettingsScreen extends StatelessWidget {
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Close'),
+              style: TextButton.styleFrom(
+                foregroundColor: DayawColors.deepBrown,
+              ),
+              child: Text(context.tr('Close', 'Isara')),
             ),
           ],
         ),
@@ -256,17 +335,22 @@ class SettingsScreen extends StatelessWidget {
     final confirmed = await showCupertinoDialog<bool>(
       context: context,
       builder: (context) => CupertinoAlertDialog(
-        title: const Text('Reset settings?'),
-        content: const Text('All settings go back to their defaults.'),
+        title: Text(context.tr('Reset settings?', 'I-reset ang mga setting?')),
+        content: Text(
+          context.tr(
+            'All settings go back to their defaults.',
+            'Babalik sa default ang lahat ng setting.',
+          ),
+        ),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(context.tr('Cancel', 'Kanselahin')),
           ),
           CupertinoDialogAction(
             isDestructiveAction: true,
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Reset'),
+            child: Text(context.tr('Reset', 'I-reset')),
           ),
         ],
       ),
@@ -282,17 +366,22 @@ class _EmptyLicensesPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Open-source licenses'),
+        title: Text(
+          context.tr('Open-source licenses', 'Mga open-source na lisensya'),
+        ),
         backgroundColor: Colors.transparent,
-        foregroundColor: Colors.brown,
+        foregroundColor: DayawColors.deepBrown,
         elevation: 0,
       ),
       extendBodyBehindAppBar: true,
-      body: const GlassBackground(
+      body: GlassBackground(
         child: Center(
           child: Text(
-            'No licenses to show yet.',
-            style: TextStyle(color: Colors.black54),
+            context.tr(
+              'No licenses to show yet.',
+              'Wala pang lisensyang maipapakita.',
+            ),
+            style: const TextStyle(color: Colors.black54),
           ),
         ),
       ),
@@ -303,30 +392,22 @@ class _EmptyLicensesPage extends StatelessWidget {
 /// A titled group of rows on one glass card, rows split by hairlines.
 class _Section extends StatelessWidget {
   final String? title;
+  final IconData? icon;
   final List<Widget> children;
 
-  const _Section({this.title, required this.children});
+  const _Section({this.title, this.icon, required this.children});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.only(bottom: 24),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (title != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-              child: Text(
-                title!.toUpperCase(),
-                style: const TextStyle(
-                  fontSize: 12,
-                  letterSpacing: 0.6,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black45,
-                ),
-              ),
-            ),
+          if (title != null) ...[
+            DayawSectionTitle(title!, icon ?? Icons.circle_outlined),
+            const SizedBox(height: 10),
+          ],
           GlassContainer(
             borderRadius: const BorderRadius.all(Radius.circular(18)),
             child: Column(
@@ -337,7 +418,7 @@ class _Section extends StatelessWidget {
                       height: 1,
                       thickness: 0.5,
                       indent: 58,
-                      color: Colors.black.withValues(alpha: 0.12),
+                      color: DayawColors.deepBrown.withValues(alpha: 0.12),
                     ),
                   children[i],
                 ],
@@ -350,13 +431,13 @@ class _Section extends StatelessWidget {
   }
 }
 
-/// One settings row: colored icon badge, title (+ optional subtitle),
+/// One settings row: brown icon badge, title (+ optional subtitle),
 /// optional trailing widget, and an optional full-width control below.
+/// [destructive] rows (e.g. reset) use the muted brick color instead.
 class _Tile extends StatelessWidget {
   final IconData icon;
-  final Color iconColor;
   final String title;
-  final Color? titleColor;
+  final bool destructive;
   final String? subtitle;
   final Widget? trailing;
   final Widget? below;
@@ -365,9 +446,8 @@ class _Tile extends StatelessWidget {
 
   const _Tile({
     required this.icon,
-    required this.iconColor,
     required this.title,
-    this.titleColor,
+    this.destructive = false,
     this.subtitle,
     this.trailing,
     this.below,
@@ -390,10 +470,16 @@ class _Tile extends StatelessWidget {
                   width: 30,
                   height: 30,
                   decoration: BoxDecoration(
-                    color: iconColor,
-                    borderRadius: BorderRadius.circular(8),
+                    color: destructive
+                        ? DayawColors.brick
+                        : DayawColors.deepBrown,
+                    borderRadius: BorderRadius.circular(9),
                   ),
-                  child: Icon(icon, color: Colors.white, size: 18),
+                  child: Icon(
+                    icon,
+                    color: destructive ? Colors.white : DayawColors.gold,
+                    size: 17,
+                  ),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -404,8 +490,10 @@ class _Tile extends StatelessWidget {
                         title,
                         style: TextStyle(
                           fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                          color: titleColor ?? Colors.black87,
+                          fontWeight: FontWeight.w600,
+                          color: destructive
+                              ? DayawColors.brick
+                              : DayawColors.deepBrown,
                         ),
                       ),
                       if (subtitle != null)
@@ -421,7 +509,10 @@ class _Tile extends StatelessWidget {
                 ),
                 if (trailing != null) ...[const SizedBox(width: 8), trailing!],
                 if (showChevron)
-                  const Icon(Icons.chevron_right, color: Colors.black38),
+                  Icon(
+                    Icons.chevron_right,
+                    color: DayawColors.deepBrown.withValues(alpha: 0.4),
+                  ),
               ],
             ),
             if (below != null) ...[
@@ -437,7 +528,6 @@ class _Tile extends StatelessWidget {
 
 class _SwitchTile extends StatelessWidget {
   final IconData icon;
-  final Color iconColor;
   final String title;
   final String? subtitle;
   final bool value;
@@ -445,7 +535,6 @@ class _SwitchTile extends StatelessWidget {
 
   const _SwitchTile({
     required this.icon,
-    required this.iconColor,
     required this.title,
     this.subtitle,
     required this.value,
@@ -456,20 +545,19 @@ class _SwitchTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return _Tile(
       icon: icon,
-      iconColor: iconColor,
       title: title,
       subtitle: subtitle,
       onTap: () => onChanged(!value),
       trailing: CupertinoSwitch(
         value: value,
-        activeTrackColor: Colors.brown,
+        activeTrackColor: DayawColors.deepBrown,
         onChanged: onChanged,
       ),
     );
   }
 }
 
-/// The app's liquid glass selector on a small dark track, sized for a
+/// The app's liquid glass selector on a small brown track, sized for a
 /// settings row.
 class _SmallSelector extends StatelessWidget {
   final List<String> labels;
@@ -484,11 +572,11 @@ class _SmallSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Plain dark track (no second blur): it already sits on a glass card.
+    // Plain brown track (no second blur): it already sits on a glass card.
     return Container(
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: DayawColors.deepBrown.withValues(alpha: 0.8),
         borderRadius: BorderRadius.circular(11),
       ),
       child: LiquidGlassSelector(

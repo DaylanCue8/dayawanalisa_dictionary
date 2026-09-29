@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/app_language.dart';
+
 class InfoModal extends StatelessWidget {
   const InfoModal({super.key});
 
@@ -31,26 +33,43 @@ class InfoModal extends StatelessWidget {
             ),
             const SizedBox(height: 20),
 
-            const Text(
-              "About Dayaw",
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.brown),
+            Text(
+              context.tr("About Dayaw", "Tungkol sa Dayaw"),
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.brown,
+              ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              "Dayaw is a Capstone project from Leyte Normal University (LNU) dedicated to preserving the ancient Filipino script through recognition.",
-              style: TextStyle(fontSize: 15, color: Colors.black87),
+            Text(
+              context.tr(
+                "Dayaw is a Capstone project from Leyte Normal University (LNU) dedicated to preserving the ancient Filipino script through recognition.",
+                "Ang Dayaw ay isang Capstone project mula sa Leyte Normal University (LNU) na layuning pangalagaan ang sinaunang panitik ng mga Pilipino sa pamamagitan ng pagkilala rito.",
+              ),
+              style: const TextStyle(fontSize: 15, color: Colors.black87),
             ),
 
             const Divider(height: 40),
 
-            const Text(
-              "How to Write for Baybayin",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.brown),
+            Text(
+              context.tr(
+                "How to Write for Baybayin",
+                "Paano Sumulat para sa Baybayin",
+              ),
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.brown,
+              ),
             ),
             const SizedBox(height: 10),
-            const Text(
-              "For the SVM + HOG model to recognize your handwriting accurately, please follow these visual guidelines:",
-              style: TextStyle(fontSize: 14, color: Colors.black54),
+            Text(
+              context.tr(
+                "For the SVM + HOG model to recognize your handwriting accurately, please follow these visual guidelines:",
+                "Para tumpak na makilala ng SVM + HOG model ang iyong sulat-kamay, sundin ang mga gabay na ito:",
+              ),
+              style: const TextStyle(fontSize: 14, color: Colors.black54),
             ),
             const SizedBox(height: 15),
 
@@ -83,9 +102,15 @@ class InfoModal extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
-                  const Text(
-                    "Supported Characters",
-                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.brown),
+                  Text(
+                    context.tr(
+                      "Supported Characters",
+                      "Mga Suportadong Karakter",
+                    ),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.brown,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   ClipRRect(
@@ -102,15 +127,40 @@ class InfoModal extends StatelessWidget {
             ),
 
             const SizedBox(height: 20),
-            const Text(
-              "Best Practices:",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            Text(
+              context.tr("Best Practices:", "Mabubuting Gawi:"),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-            const BulletPoint(text: "Use black ink on plain white paper."),
-            const BulletPoint(text: "Keep characters separated (no touching or overlapping strokes)."),
-            const BulletPoint(text: "Ensure dots/kudlits are clear, precise, and not touching the main character."),
-            const BulletPoint(text: "Draw bars as short, straight strokes above or below the character."),
-            const BulletPoint(text: "Avoid shadows or glare in your photos."),
+            BulletPoint(
+              text: context.tr(
+                "Use black ink on plain white paper.",
+                "Gumamit ng itim na tinta sa payak na puting papel.",
+              ),
+            ),
+            BulletPoint(
+              text: context.tr(
+                "Keep characters separated (no touching or overlapping strokes).",
+                "Paghiwalayin ang mga karakter (walang nagdidikit o nagpapatong na guhit).",
+              ),
+            ),
+            BulletPoint(
+              text: context.tr(
+                "Ensure dots/kudlits are clear, precise, and not touching the main character.",
+                "Siguraduhing malinaw at eksakto ang mga tuldok/kudlit, at hindi nakadikit sa pangunahing karakter.",
+              ),
+            ),
+            BulletPoint(
+              text: context.tr(
+                "Draw bars as short, straight strokes above or below the character.",
+                "Iguhit ang mga bar bilang maikli at tuwid na guhit sa itaas o ibaba ng karakter.",
+              ),
+            ),
+            BulletPoint(
+              text: context.tr(
+                "Avoid shadows or glare in your photos.",
+                "Iwasan ang anino o silaw sa iyong mga larawan.",
+              ),
+            ),
 
             const SizedBox(height: 30),
 
@@ -123,11 +173,16 @@ class InfoModal extends StatelessWidget {
                   backgroundColor: Colors.brown,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 15),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
-                child: const Text(
-                  "Ipagpatuloy",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                child: Text(
+                  context.tr("Continue", "Ipagpatuloy"),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
@@ -136,7 +191,11 @@ class InfoModal extends StatelessWidget {
             Center(
               child: Text(
                 "DAYAW - Capstone Project © 2026",
-                style: TextStyle(fontSize: 11, color: Colors.grey[400], letterSpacing: 1.2),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[400],
+                  letterSpacing: 1.2,
+                ),
               ),
             ),
             const SizedBox(height: 10),
@@ -158,8 +217,20 @@ class BulletPoint extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("• ", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.brown, fontSize: 18)),
-          Expanded(child: Text(text, style: const TextStyle(fontSize: 14, height: 1.4))),
+          const Text(
+            "• ",
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.brown,
+              fontSize: 18,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(fontSize: 14, height: 1.4),
+            ),
+          ),
         ],
       ),
     );

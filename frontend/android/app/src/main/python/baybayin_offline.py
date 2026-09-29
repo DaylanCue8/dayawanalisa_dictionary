@@ -83,6 +83,12 @@ def recognize(image_bytes, input_type='marker', debug=False):
     """
     session_id = int(time.time() * 1000) % 1_000_000_000
     input_type = input_type if input_type in ('pen', 'marker', 'pentel_pen') else 'marker'
+    if not image_bytes:
+        return _to_json({
+            'translated_text': '', 'confidence': 0.0, 'status': 'Invalid_Image',
+            'individual_detections': [], 'image_width': 0, 'image_height': 0,
+            'session_id': session_id, 'input_type_used': input_type, 'offline': True,
+        })
     try:
         with _lock:
             state = _load()
@@ -96,6 +102,11 @@ def recognize(image_bytes, input_type='marker', debug=False):
 
         if text == service.BLURRY_IMAGE_MESSAGE:
             status = 'Blurry_Image'
+        elif text == 'Error' and not results and image_dims['width'] == 0:
+            # the services return ('Error', 0, [], 0x0) when the bytes
+            # could not be decoded as an image at all
+            status = 'Invalid_Image'
+            text = ''
         elif not results:
             status = 'No_Characters'
         elif conf > 60:

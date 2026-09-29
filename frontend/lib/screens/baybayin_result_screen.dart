@@ -5,7 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
+import '../services/app_language.dart';
 import '../services/app_settings.dart';
+import '../services/recognition_outcome.dart';
+import '../services/result_exporter.dart';
+import '../widgets/dayaw_style.dart';
 import '../widgets/glass.dart';
 import '../widgets/liquid_glass_selector.dart';
 
@@ -172,11 +176,200 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
 
   void _copyResult() {
     Clipboard.setData(ClipboardData(text: widget.translatedText));
+    if (AppSettings.instance.hapticsEnabled) HapticFeedback.lightImpact();
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Copied to clipboard'),
-        duration: Duration(seconds: 2),
+      SnackBar(
+        content: Text(tr('Copied to clipboard', 'Nakopya na')),
+        duration: const Duration(seconds: 2),
       ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Export
+  // ---------------------------------------------------------------------
+
+  bool _isExporting = false;
+
+  // (format, icon, English description, Filipino description)
+  static const List<(ExportFormat, IconData, String, String)> _exportOptions = [
+    (
+      ExportFormat.jpg,
+      Icons.image_outlined,
+      'Image, small file size',
+      'Larawan, maliit na file',
+    ),
+    (
+      ExportFormat.png,
+      Icons.photo_outlined,
+      'Image, sharpest quality',
+      'Larawan, pinakamalinaw',
+    ),
+    (
+      ExportFormat.pdf,
+      Icons.picture_as_pdf_outlined,
+      'Document for printing',
+      'Dokumento para i-print',
+    ),
+    (ExportFormat.txt, Icons.notes_rounded, 'Plain text only', 'Teksto lamang'),
+  ];
+
+  /// On-screen name of a filter (the filter keys themselves stay English).
+  static String _filterLabel(String filter) => switch (filter) {
+    _rawFilter => tr('Raw', 'Orihinal'),
+    _blackWhiteFilter => tr('Black and White', 'Itim at Puti'),
+    _ => filter,
+  };
+
+  Future<void> _openExportSheet() async {
+    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    final format = await showModalBottomSheet<ExportFormat>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassContainer(
+            tint: const Color(0xE6FFFBF5),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DayawSectionTitle(
+                  context.tr('Export result', 'I-export ang resulta'),
+                  Icons.ios_share,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  context.tr(
+                    'Includes the image with the current filter, the result '
+                        'and the character breakdown.',
+                    'Kasama ang larawan sa kasalukuyang filter, ang resulta '
+                        'at ang bawat karakter.',
+                  ),
+                  style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+                ),
+                const SizedBox(height: 10),
+                for (final (format, icon, descEn, descFil) in _exportOptions)
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    leading: Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: DayawColors.deepBrown,
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: Icon(icon, color: DayawColors.gold, size: 20),
+                    ),
+                    title: Text(
+                      format.label,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: DayawColors.deepBrown,
+                      ),
+                    ),
+                    subtitle: Text(context.tr(descEn, descFil)),
+                    trailing: Icon(
+                      Icons.chevron_right,
+                      color: DayawColors.deepBrown.withValues(alpha: 0.4),
+                    ),
+                    onTap: () => Navigator.of(context).pop(format),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (format != null) await _export(format);
+  }
+
+  Future<void> _export(ExportFormat format) async {
+    setState(() => _isExporting = true);
+    try {
+      await ResultExporter.share(await _collectExport(), format);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              tr(
+                'Could not export ${format.label}: $e',
+                'Hindi ma-export ang ${format.label}: $e',
+              ),
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
+  /// Snapshot of what's on screen: the selected filter's image (and
+  /// boxes, if shown), the result and that filter's breakdown. Anything
+  /// the filter hasn't finished building yet is built here first.
+  Future<ResultExport> _collectExport() async {
+    final filter = _selectedFilter;
+
+    Uint8List image = widget.sourceImage;
+    if (filter != _rawFilter) {
+      image =
+          _filteredSourceImages[filter] ??
+          await compute(
+            filter == _hogFilter ? _hogVisualizationPng : _blackAndWhitePng,
+            widget.sourceImage,
+          );
+    }
+
+    final List<_LineResult> lines =
+        _lineResultsByFilter[filter] ??
+        await compute(_buildLineResults, _lineResultsRequest(filter));
+
+    final boxes = <ExportBox>[];
+    final confidences = <double>[];
+    for (final d in widget.detections) {
+      final conf = d['confidence'] is num ? readNumber(d, 'confidence') : null;
+      if (conf != null) confidences.add(conf);
+      final bbox = d['bbox'] as Map<String, dynamic>?;
+      if (!_showBoundingBoxes || bbox == null) continue;
+      if ((conf ?? 0) < _minConfidence) continue;
+      boxes.add(
+        ExportBox(
+          (bbox['x0'] as num).toDouble(),
+          (bbox['y0'] as num).toDouble(),
+          (bbox['x1'] as num).toDouble(),
+          (bbox['y1'] as num).toDouble(),
+          d['char']?.toString() ?? '?',
+          conf ?? 0,
+        ),
+      );
+    }
+
+    return ResultExport(
+      filteredImage: image,
+      filter: _filterLabel(filter),
+      imageWidth: widget.imageWidth,
+      imageHeight: widget.imageHeight,
+      boxes: boxes,
+      translatedText: widget.translatedText,
+      averageConfidence: confidences.isEmpty
+          ? 0
+          : confidences.reduce((a, b) => a + b) / confidences.length,
+      characterCount: widget.detections.length,
+      lines: [
+        for (final line in lines)
+          [
+            for (final c in line.results)
+              ExportCharacter(c.image, c.char, c.confidence),
+          ],
+      ],
+      createdAt: DateTime.now(),
     );
   }
 
@@ -197,15 +390,28 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
         scrolledUnderElevation: 0,
         flexibleSpace: const GlassBar(child: SizedBox.expand()),
         leading: IconButton(
-          tooltip: 'Back',
+          tooltip: context.tr('Back', 'Bumalik'),
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),
         ),
         actions: [
           TextButton.icon(
-            onPressed: () {},
-            icon: const Icon(Icons.ios_share_outlined),
-            label: const Text('Export'),
+            onPressed: _isExporting ? null : _openExportSheet,
+            icon: _isExporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.brown,
+                    ),
+                  )
+                : const Icon(Icons.ios_share_outlined),
+            label: Text(
+              _isExporting
+                  ? context.tr('Exporting...', 'Ine-export...')
+                  : context.tr('Export', 'I-export'),
+            ),
           ),
           const SizedBox(width: 8),
         ],
@@ -228,25 +434,28 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               const SizedBox(height: 10),
               _buildFilterOptions(),
               const SizedBox(height: 24),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Results',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
+              DayawSectionTitle(
+                context.tr('Results', 'Mga Resulta'),
+                Icons.translate,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               _buildPredictedOutputCard(),
               const SizedBox(height: 24),
-              const Text(
-                'Character Breakdown',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              Text(
+                context.tr('Character Breakdown', 'Bawat Karakter'),
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
               ),
               const SizedBox(height: 12),
               _buildCharacterTable(),
               const SizedBox(height: 20),
-              const Text(
-                '© 2026 DAYAW. All rights reserved.',
+              Text(
+                context.tr(
+                  '© 2026 DAYAW. All rights reserved.',
+                  '© 2026 DAYAW. Nakalaan ang lahat ng karapatan.',
+                ),
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11, color: Colors.grey),
               ),
@@ -298,8 +507,8 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       ),
       child: IconButton(
         tooltip: _showBoundingBoxes
-            ? 'Hide bounding boxes'
-            : 'Show bounding boxes',
+            ? context.tr('Hide bounding boxes', 'Itago ang mga bounding box')
+            : context.tr('Show bounding boxes', 'Ipakita ang mga bounding box'),
         padding: EdgeInsets.zero,
         style: ButtonStyle(
           overlayColor: WidgetStatePropertyAll(
@@ -359,7 +568,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
 
     final boxes = <_BoundingBox>[];
     for (final d in widget.detections) {
-      final conf = (d['confidence'] as num?)?.toDouble() ?? 0.0;
+      final conf = readNumber(d, 'confidence');
       if (conf < _minConfidence) continue;
       final bbox = d['bbox'] as Map<String, dynamic>?;
       if (bbox == null) continue;
@@ -422,7 +631,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               itemBuilder: (context, i, selectedness) => Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
-                  _filters[i],
+                  _filterLabel(_filters[i]),
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -461,25 +670,202 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     _loadFilteredSourceImage(filter);
   }
 
+  /// Same card as the Filipino to Baybayin tab's result: pops in with a
+  /// label pill, confidence ring, quick stats and a full-width copy button.
   Widget _buildPredictedOutputCard() {
-    return GlassContainer(
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              widget.translatedText.isEmpty ? '—' : widget.translatedText,
+    final text = widget.translatedText;
+    final confidences = widget.detections
+        .map((d) => readNumber(d, 'confidence'))
+        .whereType<double>()
+        .toList();
+    final confidence = confidences.isEmpty
+        ? 0.0
+        : confidences.reduce((a, b) => a + b) / confidences.length;
+    final words = text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.easeOutBack,
+      builder: (context, t, child) => Opacity(
+        opacity: t.clamp(0.0, 1.0),
+        child: Transform.translate(
+          offset: Offset(0, 24 * (1 - t)),
+          child: child,
+        ),
+      ),
+      child: GlassContainer(
+        padding: const EdgeInsets.all(18),
+        // Lightly honey-tinted glass for the result card.
+        tint: const Color(0xA6FFF4B8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [
+                        DayawColors.gold,
+                        DayawColors.yellow,
+                        DayawColors.amber,
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x33D9A441), blurRadius: 8),
+                    ],
+                  ),
+                  child: Text(
+                    context.tr('IN LATIN', 'SA LATIN'),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                if (confidence > 0) _resultConfidenceRing(confidence),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SelectableText(
+              text.isEmpty ? '—' : text,
               style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Colors.brown,
+                fontSize: 26,
+                fontWeight: FontWeight.w900,
+                color: DayawColors.deepBrown,
+                height: 1.2,
               ),
             ),
-          ),
-          IconButton(
-            onPressed: _copyResult,
-            icon: const Icon(Icons.copy, color: Colors.brown),
-            tooltip: 'Copy result',
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _resultStatChip(
+                  Icons.text_fields,
+                  context.tr(
+                    '${widget.detections.length} characters',
+                    '${widget.detections.length} karakter',
+                  ),
+                ),
+                _resultStatChip(
+                  Icons.short_text,
+                  context.tr(
+                    '$words ${words == 1 ? 'word' : 'words'}',
+                    '$words salita',
+                  ),
+                ),
+                if (_lineResults.isNotEmpty)
+                  _resultStatChip(
+                    Icons.format_list_numbered,
+                    context.tr(
+                      '${_lineResults.length} '
+                          '${_lineResults.length == 1 ? 'line' : 'lines'}',
+                      '${_lineResults.length} linya',
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: text.isEmpty ? null : _copyResult,
+                style: FilledButton.styleFrom(
+                  backgroundColor: DayawColors.deepBrown,
+                  foregroundColor: DayawColors.yellow,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                icon: const Icon(Icons.copy_rounded, size: 18),
+                label: Text(
+                  context.tr('Copy Latin', 'Kopyahin ang Latin'),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Circular gauge that fills up to the average confidence.
+  Widget _resultConfidenceRing(double confidence) {
+    final color = confidence >= 90
+        ? const Color(0xFF5E8B5A)
+        : confidence >= 75
+        ? const Color(0xFFC2873F)
+        : DayawColors.brick;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: confidence / 100),
+      duration: const Duration(milliseconds: 900),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, _) => SizedBox(
+        width: 54,
+        height: 54,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            SizedBox.expand(
+              child: CircularProgressIndicator(
+                value: value,
+                strokeWidth: 5,
+                strokeCap: StrokeCap.round,
+                color: color,
+                backgroundColor: color.withValues(alpha: 0.15),
+              ),
+            ),
+            Text(
+              '${(value * 100).round()}%',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _resultStatChip(IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            DayawColors.yellow.withValues(alpha: 0.55),
+            DayawColors.gold.withValues(alpha: 0.35),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: DayawColors.amber.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: Colors.brown),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: DayawColors.deepBrown,
+            ),
           ),
         ],
       ),
@@ -505,12 +891,15 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       );
     }
     if (_lineResults.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 20),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
         child: Center(
           child: Text(
-            'No individual characters detected.',
-            style: TextStyle(color: Colors.grey),
+            context.tr(
+              'No individual characters detected.',
+              'Walang nakitang karakter.',
+            ),
+            style: const TextStyle(color: Colors.grey),
           ),
         ),
       );
@@ -626,9 +1015,9 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
             height: 1,
           ),
         ),
-        const Text(
-          'Line',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+        Text(
+          context.tr('Line', 'Linya'),
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
         ),
       ],
     );
@@ -739,7 +1128,7 @@ List<_LineResult> _buildLineResults(_LineResultsRequest request) {
   img.Image? decodedSource; // decoded lazily, only if a fallback is needed
 
   for (final d in request.detections) {
-    final conf = (d['confidence'] as num?)?.toDouble() ?? 0.0;
+    final conf = readNumber(d, 'confidence');
     if (conf < request.minConfidence) continue;
 
     final processedImage = _decodeProcessedImage(d['processed_image']);
