@@ -4,8 +4,50 @@ import os
 import re
 import uuid
 
-import cv2
+import cv2 as _cv2_raw
 import numpy as np
+
+
+# ---- CRASH GUARD FOR OPENCV ON ANDROID ----
+# The Android build of OpenCV (4.5.1, Chaquopy) sometimes reads a few bytes
+# PAST the end of an image it is given (fast SIMD code). Arrays OpenCV makes
+# itself have spare bytes at the end, but NumPy arrays don't - so when an
+# image happens to end exactly at a memory-page edge the app is killed with
+# SIGSEGV inside cv2.so (random, more likely with many letters = many small
+# crops). Fix: every NumPy image given to OpenCV is first copied into a
+# buffer with 256 spare bytes after it. The pixels are identical, so the
+# results are identical; the copy costs only a few milliseconds.
+_CV_SPARE_BYTES = 256
+
+
+def _cv_padded(a):
+    if not isinstance(a, np.ndarray) or a.size == 0:
+        return a
+    buf = np.empty(a.nbytes + _CV_SPARE_BYTES, dtype=np.uint8)
+    view = buf[:a.nbytes].view(a.dtype).reshape(a.shape)
+    view[...] = a
+    return view
+
+
+class _SafeCV2:
+    def __init__(self, module):
+        self._module = module
+        self._wrapped = {}
+
+    def __getattr__(self, name):
+        attr = getattr(self._module, name)
+        if not callable(attr) or isinstance(attr, type):
+            return attr
+        fn = self._wrapped.get(name)
+        if fn is None:
+            def fn(*args, _attr=attr, **kwargs):
+                return _attr(*[_cv_padded(a) for a in args],
+                             **{k: _cv_padded(v) for k, v in kwargs.items()})
+            self._wrapped[name] = fn
+        return fn
+
+
+cv2 = _SafeCV2(_cv2_raw)
 from PIL import Image as PILImage, ImageOps
 try:
     from skimage.feature import hog
@@ -77,7 +119,7 @@ def enhance_image_quality(gray_img):
         gray_img, h=7, templateWindowSize=7, searchWindowSize=21
     )
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    contrasted = clahe.apply(denoised)
+    contrasted = clahe.apply(_cv_padded(denoised))
     blurred = cv2.GaussianBlur(contrasted, (0, 0), sigmaX=3)
     sharpened = cv2.addWeighted(contrasted, 1.5, blurred, -0.5, 0)
     return sharpened
@@ -247,6 +289,42 @@ def remove_noise(binary_img, debug=False):
 NOT_BASE_SMALL_FRAC = 0.45      # glyph smaller than 45% of a normal letter (both sides) = lone mark
 NOT_BASE_MAX_ASPECT = 4.0       # 4x wider than tall (or taller than wide) = line piece
 NOT_BASE_MAX_FILL = 0.65        # ink covers > 65% of its box = solid blob, not pen strokes
+
+
+# ---- "WRITTEN ON PAPER?" CHECK ----
+# Pen / marker letters sit on plain paper: after the lighting correction
+# the paper around a letter is almost perfectly flat (spread ~0), and the
+# ink is much darker. A wall, table, cloth or floor pattern that got
+# binarized has a BUSY background instead. The ratio below is the
+# background's spread divided by how much darker the ink is:
+#   handwriting on paper ~0.00, textures/patterns ~0.07 - 0.7
+TEXTURE_RATIO_MAX = 0.06
+# whole photo rejected when at least this share of the glyph candidates
+# sit on a textured background (see the page check in preprocess_and_predict)
+PAGE_TEXTURE_REJECT_FRAC = 0.35
+# ... or when a smaller share (>= 20%) is on texture AND the "letters" that
+# are left have very uneven heights (door/chair/furniture edges). Real
+# writing: texture share <= 9% and height spread <= 0.46 in our tests.
+PAGE_TEXTURE_SOFT_FRAC = 0.20
+PAGE_HEIGHT_SPREAD_MAX = 0.75
+
+
+def background_texture_ratio(gray_rot, all_ink_rot, glyph_mask, x0, y0, pad):
+    """Spread of the paper right around a glyph / how much darker its ink is."""
+    h, w = glyph_mask.shape[:2]
+    H, W = gray_rot.shape[:2]
+    ink = gray_rot[y0:y0 + h, x0:x0 + w][glyph_mask > 0]
+    ex0, ey0 = max(0, x0 - pad), max(0, y0 - pad)
+    ex1, ey1 = min(W, x0 + w + pad), min(H, y0 + h + pad)
+    around = gray_rot[ey0:ey1, ex0:ex1][all_ink_rot[ey0:ey1, ex0:ex1] == 0]
+    if ink.size == 0 or around.size < 10:
+        return 0.0
+    contrast = float(np.median(around)) - float(np.median(ink))
+    if contrast <= 1.0:
+        return float('inf')
+    q75, q25 = np.percentile(around, [75, 25])
+    spread = (float(q75) - float(q25)) / 1.349   # robust std (ignores thin lines)
+    return spread / contrast
 
 
 def not_a_base_reason(glyph_crop, typical_letter_h, typical_letter_w):
@@ -432,8 +510,23 @@ def split_into_line_masks(binary_img, bands):
         else:
             center = (top + bottom) / 2.0
             component_band[i] = int(np.argmin([abs(center - c) for c in band_centers]))
-    band_map = component_band[labels]
-    return [np.where(band_map == k, 255, 0).astype(np.uint8) for k in range(len(bands))]
+    # Memory: each line keeps only its own strip of rows (not a full-size
+    # copy of the photo). A noisy photo can "find" 20+ lines, and 20 full
+    # copies used >100 MB on the phone. Returns (strip_top_y, strip) pairs.
+    tops = stats[:, cv2.CC_STAT_TOP]
+    bottoms = tops + stats[:, cv2.CC_STAT_HEIGHT]
+    strips = []
+    for k in range(len(bands)):
+        members = np.where(component_band == k)[0]
+        if members.size == 0:
+            strips.append((0, np.zeros((0, binary_img.shape[1]), dtype=np.uint8)))
+            continue
+        r0, r1 = int(tops[members].min()), int(bottoms[members].max())
+        in_band = component_band == k
+        in_band[0] = False
+        strips.append((r0, np.where(in_band[labels[r0:r1]], 255, 0).astype(np.uint8)))
+    del labels
+    return strips
 
 
 def otsu_1d_threshold(gaps):
@@ -1071,7 +1164,15 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         flags=cv2.INTER_NEAREST, borderValue=0,
     )
 
+    # all dark marks BEFORE noise removal (ruled lines, specks still count
+    # as ink here) - used to measure the paper around each glyph
+    binary_all_ink = binary
     binary = remove_noise(binary, debug=debug)
+    # the grayscale page, rotated like the binary one
+    normalized_rot = cv2.warpAffine(
+        normalized, rotation_matrix, (image_width, image_height),
+        flags=cv2.INTER_LINEAR, borderValue=255,
+    )
 
     line_bands = find_line_bands(binary)
     if debug:
@@ -1087,14 +1188,15 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     # from the line's own mask, not the whole page, so ink from a
     # neighboring line can't leak into a glyph's crop.
     text_lines = []
-    for (band_y0, band_y1), full_mask in zip(line_bands, line_masks):
-        rows_with_ink = np.where(full_mask.any(axis=1))[0]
+    for (band_y0, band_y1), (strip_top, strip) in zip(line_bands, line_masks):
+        rows_with_ink = np.where(strip.any(axis=1))[0]
         if rows_with_ink.size == 0:
             continue
         # Use the real vertical extent of this line's ink (its marks may
         # hang beyond the original band).
-        band_y0, band_y1 = int(rows_with_ink.min()), int(rows_with_ink.max()) + 1
-        line_bin = full_mask[band_y0:band_y1, :]
+        band_y0 = strip_top + int(rows_with_ink.min())
+        band_y1 = strip_top + int(rows_with_ink.max()) + 1
+        line_bin = strip[band_y0 - strip_top:band_y1 - strip_top, :]
 
         segment_merge_kernel = estimate_segment_merge_kernel(line_bin)
         if debug:
@@ -1124,7 +1226,7 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         ]
         words = group_line_boxes_into_words(line_boxes)
         if words:
-            text_lines.append((words, full_mask))
+            text_lines.append((words, (strip_top, strip)))
 
     if debug:
         print(f"  [pen debug] paragraph structure: {len(text_lines)} line(s), "
@@ -1133,6 +1235,7 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     if not text_lines:
         return 'No characters detected', 0.0, [], {'width': image_width, 'height': image_height}
 
+    del line_masks, background, image
     session_dir = os.path.join(TEMP_ROOT, f'session_{session_id}')
     os.makedirs(session_dir, exist_ok=True)
     results = []
@@ -1147,14 +1250,17 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     result_indices_per_line = []
 
     crop_index = 0
-    for line, line_mask in text_lines:
+    glyph_candidates = 0     # every glyph that reached the checks
+    texture_rejects = 0      # ... removed because the background is not paper
+    for line, (strip_top, line_mask) in text_lines:
         line_words = []
         line_word_indices = []
         for word_group in line:
             word_parts = []
             word_result_indices = []
             for x0, y0, x1, y1 in word_group:
-                crop_offset, crop = tight_crop_glyph_with_offset(line_mask[y0:y1, x0:x1])
+                crop_offset, crop = tight_crop_glyph_with_offset(
+                    line_mask[y0 - strip_top:y1 - strip_top, x0:x1])
                 if crop is None:
                     continue
                 tight_abs_x = x0 + crop_offset[0]
@@ -1163,7 +1269,18 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                 single_glyph_crops, kernel_used = split_into_single_glyphs(crop)
 
                 for local_box, glyph_crop in single_glyph_crops:
+                    glyph_candidates += 1
                     reject_reason = not_a_base_reason(glyph_crop, typical_letter_h, typical_letter_w)
+                    if reject_reason is None:
+                        texture = background_texture_ratio(
+                            normalized_rot, binary_all_ink, glyph_crop,
+                            tight_abs_x + local_box[0], tight_abs_y + local_box[1],
+                            pad=max(4, int(0.3 * typical_letter_h)),
+                        )
+                        if texture > TEXTURE_RATIO_MAX:
+                            texture_rejects += 1
+                            reject_reason = (f'background is a texture/pattern, not paper '
+                                             f'(texture ratio {texture:.2f} > {TEXTURE_RATIO_MAX})')
                     if reject_reason is not None:
                         if debug:
                             print(f"  [pen debug] NOT A BASE - removed glyph at "
@@ -1237,6 +1354,29 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         if line_words:
             output_parts.append(' '.join(line_words))
             result_indices_per_line.append(line_word_indices)
+
+    # ---- PAGE CHECK: is this photo handwriting on paper at all? ----
+    # If most glyph candidates sat on a textured / patterned background
+    # (a wall, cloth, table, floor...), the photo is not handwriting on
+    # paper - whatever few pieces survived are noise too, so report
+    # "no characters" instead of a made-up result.
+    texture_frac = texture_rejects / float(max(1, glyph_candidates))
+    if debug:
+        print(f"  [pen debug] page check: candidates={glyph_candidates}, "
+              f"texture_rejects={texture_rejects} ({texture_frac:.0%}), kept={len(results)}")
+    height_spread = 0.0
+    if len(results) >= 3:
+        heights = np.array([r['bbox']['y1'] - r['bbox']['y0'] for r in results], dtype=np.float64)
+        height_spread = float((np.percentile(heights, 75) - np.percentile(heights, 25))
+                              / max(1.0, float(np.median(heights))))
+    if debug:
+        print(f"  [pen debug] page check: letter height spread={height_spread:.2f}")
+    if results and (texture_frac >= PAGE_TEXTURE_REJECT_FRAC or
+                    (texture_frac >= PAGE_TEXTURE_SOFT_FRAC and height_spread > PAGE_HEIGHT_SPREAD_MAX)):
+        if debug:
+            print(f"  [pen debug] PAGE REJECTED: {texture_frac:.0%} of the candidates are on a "
+                  f"textured background, height spread {height_spread:.2f} - not handwriting on paper")
+        results = []
 
     if not results:
         return 'No characters detected', 0.0, [], {'width': image_width, 'height': image_height}
