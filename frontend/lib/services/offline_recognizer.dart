@@ -1,3 +1,4 @@
+
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -52,6 +53,25 @@ class OfflineRecognizer {
       return _decode(json, 'recognize');
     } catch (e) {
       debugPrint('[OFFLINE] recognize failed: $e');
+      return null;
+    }
+  }
+
+  /// Classifies an already-generated HOG feature vector on iOS.
+  /// Image preprocessing and HOG generation will be connected after the
+  /// native model-loading slice is validated.
+  static Future<Map<String, dynamic>?> classifyFeatures(
+    List<double> features, {
+    bool diacritic = false,
+  }) async {
+    try {
+      final result = await channel.invokeMethod<Map<Object?, Object?>>(
+        'classifyFeatures',
+        {'features': features, 'diacritic': diacritic},
+      );
+      return result == null ? null : Map<String, dynamic>.from(result);
+    } catch (e) {
+      debugPrint('[OFFLINE] feature classification failed: $e');
       return null;
     }
   }
