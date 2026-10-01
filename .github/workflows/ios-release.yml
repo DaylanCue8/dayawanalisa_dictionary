@@ -1,0 +1,86 @@
+name: iOS release
+
+"on":
+  workflow_dispatch:
+
+env:
+  BUNDLE_ID: com.example.dayaw
+
+jobs:
+  release-ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run Flutter tests
+        run: flutter test
+
+      - name: Import Apple distribution certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          p12-password: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+
+      - name: Download provisioning profile
+        uses: apple-actions/download-provisioning-profiles@v4
+        with:
+          bundle-id: ${{ env.BUNDLE_ID }}
+          issuer-id: ${{ secrets.APPSTORE_CONNECT_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_CONNECT_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_CONNECT_PRIVATE_KEY }}
+
+      - name: Create export options
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
+        run: |
+          cat > /tmp/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Build signed IPA
+        run: flutter build ipa --release --export-options-plist=/tmp/ExportOptions.plist
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dayaw-ios-release
+          path: frontend/build/ios/ipa/*.ipa
+
+      - name: Upload to TestFlight
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: frontend/build/ios/ipa/*.ipa
+          issuer-id: ${{ secrets.APPSTORE_CONNECT_ISSUER_ID }}
+          api-key-id: ${{ secrets.APPSTORE_CONNECT_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_CONNECT_PRIVATE_KEY }}
