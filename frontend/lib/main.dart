@@ -48,7 +48,7 @@ class DayawApp extends StatelessWidget {
         colorSchemeSeed: Colors.brown,
         // iOS slide-in (with swipe-back from the left edge) on every
         // platform, for every MaterialPageRoute in the app.
-        pageTransitionsTheme: const PageTransitionsTheme(
+        pageTransitionsTheme: PageTransitionsTheme(
           builders: {
             TargetPlatform.android: CupertinoPageTransitionsBuilder(),
             TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
