@@ -709,12 +709,15 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [
-                        DayawColors.gold,
-                        DayawColors.yellow,
-                        DayawColors.amber,
-                      ],
+                    color: DayawColors.yellow,
+                    gradient: themedGradient(
+                      const LinearGradient(
+                        colors: [
+                          DayawColors.gold,
+                          DayawColors.yellow,
+                          DayawColors.amber,
+                        ],
+                      ),
                     ),
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: const [
@@ -845,11 +848,14 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            DayawColors.yellow.withValues(alpha: 0.55),
-            DayawColors.gold.withValues(alpha: 0.35),
-          ],
+        color: DayawColors.yellow.withValues(alpha: 0.45),
+        gradient: themedGradient(
+          LinearGradient(
+            colors: [
+              DayawColors.yellow.withValues(alpha: 0.55),
+              DayawColors.gold.withValues(alpha: 0.35),
+            ],
+          ),
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: DayawColors.amber.withValues(alpha: 0.5)),

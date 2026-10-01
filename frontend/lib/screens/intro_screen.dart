@@ -7,6 +7,8 @@ import '../services/app_language.dart';
 import 'legal_screen.dart';
 import '../services/app_settings.dart';
 import '../services/tagalog_to_baybayin_local_translator.dart';
+import '../widgets/dayaw_style.dart';
+import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
 import 'dayaw_landing_screen.dart';
 
@@ -182,6 +184,17 @@ class _IntroScreenState extends State<IntroScreen>
   // ---------------------------------------------------------------------
 
   Widget _buildDriftingBackground() {
+    switch (DayawTheme.of(context)) {
+      case DayawTheme.bold:
+        return const ColoredBox(color: DayawColors.paper);
+      case DayawTheme.embroidery:
+        return const LinenBackground(
+          color: DayawColors.paper,
+          child: SizedBox.expand(),
+        );
+      case DayawTheme.gradient:
+        break;
+    }
     return AnimatedBuilder(
       animation: _drift,
       builder: (context, _) {
@@ -335,8 +348,11 @@ class _IntroScreenState extends State<IntroScreen>
                           height: 3,
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(2),
-                            gradient: const LinearGradient(
-                              colors: [_amber, _yellow, _gold],
+                            color: _amber,
+                            gradient: themedGradient(
+                              const LinearGradient(
+                                colors: [_amber, _yellow, _gold],
+                              ),
                             ),
                             boxShadow: const [
                               BoxShadow(
@@ -483,15 +499,18 @@ class _IntroScreenState extends State<IntroScreen>
                     child: Container(
                       height: 3,
                       margin: const EdgeInsets.symmetric(horizontal: 30),
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Color(0x00FFE000),
-                            _yellow,
-                            Color(0x00FFE000),
-                          ],
+                      decoration: BoxDecoration(
+                        color: _yellow,
+                        gradient: themedGradient(
+                          const LinearGradient(
+                            colors: [
+                              Color(0x00FFE000),
+                              _yellow,
+                              Color(0x00FFE000),
+                            ],
+                          ),
                         ),
-                        boxShadow: [
+                        boxShadow: const [
                           BoxShadow(color: Color(0xAAFFE000), blurRadius: 12),
                         ],
                       ),
@@ -712,10 +731,13 @@ class _IntroScreenState extends State<IntroScreen>
           height: 64,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [_gold, _yellow, _amber],
+            color: _yellow,
+            gradient: themedGradient(
+              const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [_gold, _yellow, _amber],
+              ),
             ),
             boxShadow: [
               BoxShadow(
@@ -822,8 +844,9 @@ class _IntroScreenState extends State<IntroScreen>
               width: isLast ? 180 : 58,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(29),
-                gradient: const LinearGradient(
-                  colors: [_amber, _yellow, _gold],
+                color: _yellow,
+                gradient: themedGradient(
+                  const LinearGradient(colors: [_amber, _yellow, _gold]),
                 ),
                 border: Border.all(color: Colors.white.withValues(alpha: 0.7)),
                 boxShadow: const [
@@ -895,14 +918,23 @@ class _HandwrittenWord extends StatelessWidget {
       children: [
         ClipRect(
           clipper: _RevealClipper(progress),
-          child: ShaderMask(
-            shaderCallback: (bounds) => const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF4E342E), Color(0xFF8D4A2B), Color(0xFFC77800)],
-            ).createShader(bounds),
-            child: Text(text, style: style),
-          ),
+          child: DayawTheme.of(context) == DayawTheme.gradient
+              ? ShaderMask(
+                  shaderCallback: (bounds) => const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xFF4E342E),
+                      Color(0xFF8D4A2B),
+                      Color(0xFFC77800),
+                    ],
+                  ).createShader(bounds),
+                  child: Text(text, style: style),
+                )
+              : Text(
+                  text,
+                  style: style.copyWith(color: const Color(0xFF4E342E)),
+                ),
         ),
         if (penVisible)
           Positioned.fill(

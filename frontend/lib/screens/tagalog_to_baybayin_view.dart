@@ -8,6 +8,7 @@ import '../services/app_settings.dart';
 import '../services/recognition_outcome.dart';
 import '../services/tagalog_to_baybayin_local_translator.dart';
 import '../widgets/dayaw_style.dart';
+import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
 
 /// Handles the "Filipino to Baybayin" mode (internally still keyed as
@@ -320,6 +321,10 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
   /// The text box, framed by a slowly rotating gradient glow that burns
   /// brighter while focused or translating.
   Widget _buildInputCard() {
+    // Gradient: rotating honey ring. Bold: solid amber ring. Embroidery:
+    // an amber stitch sewn over the panel, like work in a hoop.
+    final theme = DayawTheme.of(context);
+    final embroidered = theme == DayawTheme.embroidery;
     return RepaintBoundary(
       child: AnimatedBuilder(
         animation: _ambient,
@@ -327,22 +332,25 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
           final active = _isLoading || _inputFocus.hasFocus;
           final glow = active ? 0.75 + 0.25 * _breath : 0.35 + 0.35 * _breath;
           return Container(
-            padding: const EdgeInsets.all(2.5),
+            padding: embroidered ? null : const EdgeInsets.all(2.5),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(26),
-              gradient: SweepGradient(
-                transform: GradientRotation(2 * math.pi * _ambient.value),
-                colors: const [
-                  // Starts and ends on the same yellow so the rotating
-                  // seam is invisible.
-                  _yellow,
-                  _amber,
-                  _gold,
-                  _yellow,
-                  Color(0xFFB9853A),
-                  _gold,
-                  _yellow,
-                ],
+              color: embroidered ? const Color(0xFFFFFBF5) : _amber,
+              gradient: themedGradient(
+                SweepGradient(
+                  transform: GradientRotation(2 * math.pi * _ambient.value),
+                  colors: const [
+                    // Starts and ends on the same yellow so the rotating
+                    // seam is invisible.
+                    _yellow,
+                    _amber,
+                    _gold,
+                    _yellow,
+                    Color(0xFFB9853A),
+                    _gold,
+                    _yellow,
+                  ],
+                ),
               ),
               boxShadow: [
                 BoxShadow(
@@ -352,11 +360,23 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
                 ),
               ],
             ),
-            child: child,
+            child: embroidered
+                ? CustomPaint(
+                    foregroundPainter: const StitchBorderPainter(
+                      color: Thread.amber,
+                      radius: 26,
+                      inset: 7,
+                      stitch: 9,
+                      gap: 5,
+                      width: 2.4,
+                    ),
+                    child: child,
+                  )
+                : child,
           );
         },
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(23.5),
+          borderRadius: BorderRadius.circular(embroidered ? 26 : 23.5),
           child: ColoredBox(
             color: const Color(0xFFFFFBF5),
             child: Padding(
@@ -460,11 +480,14 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
               child: Ink(
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      _yellow.withValues(alpha: 0.55),
-                      _gold.withValues(alpha: 0.35),
-                    ],
+                  color: _yellow.withValues(alpha: 0.45),
+                  gradient: themedGradient(
+                    LinearGradient(
+                      colors: [
+                        _yellow.withValues(alpha: 0.55),
+                        _gold.withValues(alpha: 0.35),
+                      ],
+                    ),
                   ),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: _amber.withValues(alpha: 0.5)),
@@ -553,8 +576,9 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [_gold, _yellow, _amber],
+                    color: _yellow,
+                    gradient: themedGradient(
+                      const LinearGradient(colors: [_gold, _yellow, _amber]),
                     ),
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: const [
@@ -668,14 +692,17 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
               child: Container(
                 width: 52,
                 height: 52,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [_gold, _yellow, _amber],
+                  color: _yellow,
+                  gradient: themedGradient(
+                    const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [_gold, _yellow, _amber],
+                    ),
                   ),
-                  boxShadow: [
+                  boxShadow: const [
                     BoxShadow(
                       color: Color(0x44D9A441),
                       blurRadius: 16,
@@ -768,11 +795,14 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _yellow.withValues(alpha: 0.55),
-            _gold.withValues(alpha: 0.35),
-          ],
+        color: _yellow.withValues(alpha: 0.45),
+        gradient: themedGradient(
+          LinearGradient(
+            colors: [
+              _yellow.withValues(alpha: 0.55),
+              _gold.withValues(alpha: 0.35),
+            ],
+          ),
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: _amber.withValues(alpha: 0.5)),
@@ -822,10 +852,13 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
             padding: const EdgeInsets.symmetric(vertical: 8),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [_deepBrown, Color(0xFF6D4C41)],
+              color: _deepBrown,
+              gradient: themedGradient(
+                const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [_deepBrown, Color(0xFF6D4C41)],
+                ),
               ),
             ),
             child: Column(
@@ -890,15 +923,18 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
         padding: const EdgeInsets.symmetric(vertical: 8),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: unsupported
-                ? [const Color(0xFFF8ECE8), const Color(0xFFF1DDD6)]
-                : [
-                    Colors.white.withValues(alpha: 0.95),
-                    _yellow.withValues(alpha: 0.35),
-                  ],
+          color: unsupported ? const Color(0xFFF8ECE8) : Colors.white,
+          gradient: themedGradient(
+            LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: unsupported
+                  ? [const Color(0xFFF8ECE8), const Color(0xFFF1DDD6)]
+                  : [
+                      Colors.white.withValues(alpha: 0.95),
+                      _yellow.withValues(alpha: 0.35),
+                    ],
+            ),
           ),
           border: Border.all(
             color: unsupported
@@ -976,14 +1012,17 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(18),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                // One quiet sand wash for every tip, so the row stays calm.
-                colors: [
-                  Colors.white.withValues(alpha: 0.7),
-                  _gold.withValues(alpha: 0.45),
-                ],
+              color: Colors.white.withValues(alpha: 0.7),
+              gradient: themedGradient(
+                LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  // One quiet sand wash for every tip, so the row stays calm.
+                  colors: [
+                    Colors.white.withValues(alpha: 0.7),
+                    _gold.withValues(alpha: 0.45),
+                  ],
+                ),
               ),
               border: Border.all(color: _yellow.withValues(alpha: 0.6)),
               boxShadow: const [
@@ -1038,12 +1077,15 @@ class _TagalogToBaybayinViewState extends State<TagalogToBaybayinView>
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(22),
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            // Dark brown easing into a softer brown corner.
-            colors: [_deepBrown, Color(0xFF6D4C41), Color(0xFF8A6A4A)],
-            stops: [0, 0.6, 1],
+          color: _deepBrown,
+          gradient: themedGradient(
+            const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              // Dark brown easing into a softer brown corner.
+              colors: [_deepBrown, Color(0xFF6D4C41), Color(0xFF8A6A4A)],
+              stops: [0, 0.6, 1],
+            ),
           ),
           border: Border.all(color: _yellow.withValues(alpha: 0.7), width: 1.5),
           boxShadow: const [

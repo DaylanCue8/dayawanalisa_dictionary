@@ -15,6 +15,7 @@ import '../screens/camera_capture_screen.dart';
 import '../screens/baybayin_result_screen.dart';
 import '../screens/multi_page_result_screen.dart';
 import '../widgets/dayaw_style.dart';
+import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
 
 /// Handles the "Baybayin to Latin" mode: capture/upload a photo, crop it,
@@ -567,6 +568,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   /// The photo (or the empty scanner), framed by a slowly rotating
   /// gradient glow.
   Widget _buildScannerCard() {
+    // Gradient: rotating honey ring. Bold: solid amber ring. Embroidery:
+    // an amber hoop stitch, drawn over the photo too like a frame.
+    final embroidered = DayawTheme.of(context) == DayawTheme.embroidery;
     return RepaintBoundary(
       child: AnimatedBuilder(
         animation: _ambient,
@@ -574,22 +578,25 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           final glow = _isLoading ? 1.0 : 0.35 + 0.35 * _breath;
           return Container(
             height: 300,
-            padding: const EdgeInsets.all(2.5),
+            padding: embroidered ? null : const EdgeInsets.all(2.5),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(26),
-              gradient: SweepGradient(
-                transform: GradientRotation(2 * math.pi * _ambient.value),
-                colors: const [
-                  // Starts and ends on the same yellow so the rotating
-                  // seam is invisible.
-                  _yellow,
-                  _amber,
-                  _gold,
-                  _yellow,
-                  Color(0xFFB9853A),
-                  _gold,
-                  _yellow,
-                ],
+              color: embroidered ? const Color(0xFFFFFBF5) : _amber,
+              gradient: themedGradient(
+                SweepGradient(
+                  transform: GradientRotation(2 * math.pi * _ambient.value),
+                  colors: const [
+                    // Starts and ends on the same yellow so the rotating
+                    // seam is invisible.
+                    _yellow,
+                    _amber,
+                    _gold,
+                    _yellow,
+                    Color(0xFFB9853A),
+                    _gold,
+                    _yellow,
+                  ],
+                ),
               ),
               boxShadow: [
                 BoxShadow(
@@ -599,11 +606,23 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                 ),
               ],
             ),
-            child: child,
+            child: embroidered
+                ? CustomPaint(
+                    foregroundPainter: const StitchBorderPainter(
+                      color: Thread.amber,
+                      radius: 26,
+                      inset: 7,
+                      stitch: 9,
+                      gap: 5,
+                      width: 2.4,
+                    ),
+                    child: child,
+                  )
+                : child,
           );
         },
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(23.5),
+          borderRadius: BorderRadius.circular(embroidered ? 26 : 23.5),
           child: ColoredBox(
             color: const Color(0xFFFFFBF5),
             child: Stack(
@@ -668,14 +687,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               Container(
                 width: 84,
                 height: 84,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [_gold, _yellow, _amber],
+                  color: _yellow,
+                  gradient: themedGradient(
+                    const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [_gold, _yellow, _amber],
+                    ),
                   ),
-                  boxShadow: [
+                  boxShadow: const [
                     BoxShadow(
                       color: Color(0x44D9A441),
                       blurRadius: 22,
@@ -744,14 +766,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         child: Container(
           height: 3,
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                _amber.withValues(alpha: 0),
-                _yellow.withValues(alpha: faint ? 0.75 : 1),
-                _gold,
-                _yellow.withValues(alpha: faint ? 0.75 : 1),
-                _amber.withValues(alpha: 0),
-              ],
+            color: _amber.withValues(alpha: faint ? 0.75 : 1),
+            gradient: themedGradient(
+              LinearGradient(
+                colors: [
+                  _amber.withValues(alpha: 0),
+                  _yellow.withValues(alpha: faint ? 0.75 : 1),
+                  _gold,
+                  _yellow.withValues(alpha: faint ? 0.75 : 1),
+                  _amber.withValues(alpha: 0),
+                ],
+              ),
             ),
             boxShadow: [
               BoxShadow(
@@ -873,12 +898,15 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
             borderRadius: BorderRadius.circular(29),
             // Honey gradient whose bright band slowly drifts back and
             // forth, like light moving across it.
-            gradient: LinearGradient(
-              begin: Alignment(-1.6 + 1.2 * _breath, 0),
-              end: Alignment(1.6 + 1.2 * _breath, 0),
-              colors: _isLoading
-                  ? [Colors.grey.shade400, Colors.grey.shade500]
-                  : const [_amber, _yellow, _gold, _yellow, _amber],
+            color: _isLoading ? Colors.grey.shade400 : _yellow,
+            gradient: themedGradient(
+              LinearGradient(
+                begin: Alignment(-1.6 + 1.2 * _breath, 0),
+                end: Alignment(1.6 + 1.2 * _breath, 0),
+                colors: _isLoading
+                    ? [Colors.grey.shade400, Colors.grey.shade500]
+                    : const [_amber, _yellow, _gold, _yellow, _amber],
+              ),
             ),
             border: Border.all(
               color: Colors.white.withValues(alpha: _isLoading ? 0 : 0.7),
@@ -982,8 +1010,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [_gold, _yellow, _amber],
+                    color: _yellow,
+                    gradient: themedGradient(
+                      const LinearGradient(colors: [_gold, _yellow, _amber]),
                     ),
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: const [
@@ -1117,11 +1146,14 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _yellow.withValues(alpha: 0.55),
-            _gold.withValues(alpha: 0.35),
-          ],
+        color: _yellow.withValues(alpha: 0.45),
+        gradient: themedGradient(
+          LinearGradient(
+            colors: [
+              _yellow.withValues(alpha: 0.55),
+              _gold.withValues(alpha: 0.35),
+            ],
+          ),
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: _amber.withValues(alpha: 0.5)),
@@ -1161,14 +1193,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(18),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                // One quiet sand wash for every tip, so the row stays calm.
-                colors: [
-                  Colors.white.withValues(alpha: 0.7),
-                  _gold.withValues(alpha: 0.45),
-                ],
+              color: Colors.white.withValues(alpha: 0.7),
+              gradient: themedGradient(
+                LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  // One quiet sand wash for every tip, so the row stays calm.
+                  colors: [
+                    Colors.white.withValues(alpha: 0.7),
+                    _gold.withValues(alpha: 0.45),
+                  ],
+                ),
               ),
               border: Border.all(color: _yellow.withValues(alpha: 0.6)),
               boxShadow: const [
@@ -1223,12 +1258,15 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(22),
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            // Dark brown easing into a softer brown corner.
-            colors: [_deepBrown, Color(0xFF6D4C41), Color(0xFF8A6A4A)],
-            stops: [0, 0.6, 1],
+          color: _deepBrown,
+          gradient: themedGradient(
+            const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              // Dark brown easing into a softer brown corner.
+              colors: [_deepBrown, Color(0xFF6D4C41), Color(0xFF8A6A4A)],
+              stops: [0, 0.6, 1],
+            ),
           ),
           border: Border.all(color: _yellow.withValues(alpha: 0.7), width: 1.5),
           boxShadow: const [
