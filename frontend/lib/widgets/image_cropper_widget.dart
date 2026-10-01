@@ -38,7 +38,8 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
   int? _draggingCorner;
 
   static const double _handleRadius = 14;
-  static const double _grabRadius = 40; // how close a touch must be to grab a corner
+  static const double _grabRadius =
+      40; // how close a touch must be to grab a corner
 
   @override
   void initState() {
@@ -49,10 +50,15 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
   Future<void> _detect() async {
     Map<String, dynamic>? result;
     try {
-      final Map<String, dynamic> r = await compute(detectPaperCorners, widget.imageData);
+      final Map<String, dynamic> r = await compute(
+        detectPaperCorners,
+        widget.imageData,
+      );
       result = r;
-      debugPrint('[CROPPER] mode=${r['mode']} '
-          'size=${r['width']}x${r['height']} quad=${r['quad']}');
+      debugPrint(
+        '[CROPPER] mode=${r['mode']} '
+        'size=${r['width']}x${r['height']} quad=${r['quad']}',
+      );
     } catch (e, st) {
       debugPrint('[CROPPER] detection failed: $e\n$st');
       result = null;
@@ -66,7 +72,7 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
         if (quad != null) {
           _corners = [
             for (final p in quad)
-              Offset((p[0] as num).toDouble(), (p[1] as num).toDouble())
+              Offset((p[0] as num).toDouble(), (p[1] as num).toDouble()),
           ];
           _detectMode = (result['mode'] as String?) ?? 'none';
         }
@@ -77,11 +83,11 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
   }
 
   List<Offset> _fullImageCorners() => [
-        const Offset(0, 0),
-        Offset(_imageWidth, 0),
-        Offset(_imageWidth, _imageHeight),
-        Offset(0, _imageHeight),
-      ];
+    const Offset(0, 0),
+    Offset(_imageWidth, 0),
+    Offset(_imageWidth, _imageHeight),
+    Offset(0, _imageHeight),
+  ];
 
   Future<void> _apply() async {
     setState(() => _isCropping = true);
@@ -90,7 +96,7 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
       cropped = await compute(rectifyQuad, {
         'bytes': widget.imageData,
         'quad': [
-          for (final c in _corners) [c.dx, c.dy]
+          for (final c in _corners) [c.dx, c.dy],
         ],
       });
     } catch (_) {
@@ -123,14 +129,14 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
   }
 
   Offset _toScreen(Offset p, Rect r) => Offset(
-        r.left + p.dx / _imageWidth * r.width,
-        r.top + p.dy / _imageHeight * r.height,
-      );
+    r.left + p.dx / _imageWidth * r.width,
+    r.top + p.dy / _imageHeight * r.height,
+  );
 
   Offset _toImage(Offset s, Rect r) => Offset(
-        ((s.dx - r.left) / r.width * _imageWidth).clamp(0.0, _imageWidth),
-        ((s.dy - r.top) / r.height * _imageHeight).clamp(0.0, _imageHeight),
-      );
+    ((s.dx - r.left) / r.width * _imageWidth).clamp(0.0, _imageWidth),
+    ((s.dy - r.top) / r.height * _imageHeight).clamp(0.0, _imageHeight),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -182,7 +188,10 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
             : Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 10,
+                      horizontal: 16,
+                    ),
                     child: Text(
                       _detectMode == 'text'
                           ? context.tr(
@@ -208,9 +217,14 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
                       padding: const EdgeInsets.all(_handleRadius + 6),
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          final box = Size(constraints.maxWidth, constraints.maxHeight);
+                          final box = Size(
+                            constraints.maxWidth,
+                            constraints.maxHeight,
+                          );
                           final rect = _displayRect(box);
-                          final screenCorners = [for (final c in _corners) _toScreen(c, rect)];
+                          final screenCorners = [
+                            for (final c in _corners) _toScreen(c, rect),
+                          ];
 
                           return GestureDetector(
                             behavior: HitTestBehavior.opaque,
@@ -218,7 +232,9 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
                               int? nearest;
                               double best = _grabRadius;
                               for (int i = 0; i < 4; i++) {
-                                final dist = (screenCorners[i] - d.localPosition).distance;
+                                final dist =
+                                    (screenCorners[i] - d.localPosition)
+                                        .distance;
                                 if (dist < best) {
                                   best = dist;
                                   nearest = i;
@@ -234,12 +250,16 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
                                   ..[i] = _toImage(d.localPosition, rect);
                               });
                             },
-                            onPanEnd: (_) => setState(() => _draggingCorner = null),
+                            onPanEnd: (_) =>
+                                setState(() => _draggingCorner = null),
                             child: Stack(
                               children: [
                                 Positioned.fromRect(
                                   rect: rect,
-                                  child: Image.memory(widget.imageData, fit: BoxFit.fill),
+                                  child: Image.memory(
+                                    widget.imageData,
+                                    fit: BoxFit.fill,
+                                  ),
                                 ),
                                 Positioned.fill(
                                   child: CustomPaint(
@@ -256,7 +276,9 @@ class _ImageCropperScreenState extends State<ImageCropperScreen> {
                                     child: ColoredBox(
                                       color: Colors.black54,
                                       child: Center(
-                                        child: CircularProgressIndicator(color: Colors.white),
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -356,26 +378,34 @@ class _QuadPainter extends CustomPainter {
 // ---------------------------------------------------------------------
 const int _detectWidth = 400;
 const double _minPaperAreaFrac = 0.20; // paper must cover >= 20% of the photo
-const double _minCandidateAreaFrac = 0.05; // bright regions >= 5% may be the paper
+const double _minCandidateAreaFrac =
+    0.05; // bright regions >= 5% may be the paper
 const int _maxPaperCandidates = 3; // check the 3 biggest bright regions
-const double _leakFrac = 0.97; // grown to >= 97% of the photo = leaked into the background
+const double _leakFrac =
+    0.97; // grown to >= 97% of the photo = leaked into the background
 const double _fullFrameAreaFrac = 0.97; // >= 97%: paper already fills the photo
 const int _solidCheckStep = 3; // ignore thin bright specks / lines
-const double _smoothEdgeLimit = 12; // brightness change per pixel that counts as an edge
-const double _shadeMinBrightness = 0.40; // shaded paper: >= 40% of the lit paper
-const double _shadeTintTolerance = 0.08; // shaded paper: same colour tint as the paper
+const double _smoothEdgeLimit =
+    12; // brightness change per pixel that counts as an edge
+const double _shadeMinBrightness =
+    0.40; // shaded paper: >= 40% of the lit paper
+const double _shadeTintTolerance =
+    0.08; // shaded paper: same colour tint as the paper
 const double _shadeMinAreaFrac = 0.01; // shaded part must be >= 1% of the photo
 const int _shadeTouchPx = 5; // shaded part must touch the paper (within 5 px)
 const double _inkLocalFrac = 0.80; // ink = darker than 80% of its surroundings
 const int _inkLocalMinDiff = 12; // ... and at least 12 levels darker
 const double _edgeWidenFrac = 0.02; // widen the paper area 2%
-const double _textMarginLetters = 0.8; // margin around the text, in letter sizes
+const double _textMarginLetters =
+    0.8; // margin around the text, in letter sizes
 const double _minTextMarginPx = 6; // (at detection size) never less than this
-const double _snapLetters = 1.5; // text this close to the paper edge -> go to the edge
+const double _snapLetters =
+    1.5; // text this close to the paper edge -> go to the edge
 
 Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
   final decoded = img.decodeImage(bytes);
-  if (decoded == null) return {'width': 1, 'height': 1, 'quad': null, 'mode': 'none'};
+  if (decoded == null)
+    return {'width': 1, 'height': 1, 'quad': null, 'mode': 'none'};
   final oriented = img.bakeOrientation(decoded);
   final result = <String, dynamic>{
     'width': oriented.width,
@@ -392,7 +422,9 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
 
   // ---- grayscale (+ colour for the tint check) + Otsu -> bright mask ----
   final gray = List<int>.filled(n, 0);
-  final red = List<int>.filled(n, 0), green = List<int>.filled(n, 0), blue = List<int>.filled(n, 0);
+  final red = List<int>.filled(n, 0),
+      green = List<int>.filled(n, 0),
+      blue = List<int>.filled(n, 0);
   final histogram = List<int>.filled(256, 0);
   for (int y = 0; y < h; y++) {
     for (int x = 0; x < w; x++) {
@@ -435,14 +467,17 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
     inkAll[i] = gray[i] < _inkLocalFrac * m && m - gray[i] > _inkLocalMinDiff;
   }
   final inkAllLabel = List<int>.filled(n, 0);
-  final letterLike = _connectedComponents(inkAll, w, h, inkAllLabel, eightConnected: true)
-      .where((c) =>
-          c.area >= 3 &&
-          math.max(c.width, c.height) >= 3 &&
-          c.width < 0.5 * w &&
-          c.height < 0.5 * h &&
-          c.area < 0.02 * n)
-      .toList();
+  final letterLike =
+      _connectedComponents(inkAll, w, h, inkAllLabel, eightConnected: true)
+          .where(
+            (c) =>
+                c.area >= 3 &&
+                math.max(c.width, c.height) >= 3 &&
+                c.width < 0.5 * w &&
+                c.height < 0.5 * h &&
+                c.area < 0.02 * n,
+          )
+          .toList();
 
   // ---- 1. PAPER ----
   // Candidates = the biggest bright regions (paper, but maybe also a
@@ -452,8 +487,13 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
   // background sometimes "stole" the paper - that is why it worked
   // only sometimes.)
   final seedLabel = List<int>.filled(n, 0);
-  final components = _connectedComponents(solid, w, h, seedLabel, eightConnected: false)
-    ..sort((p, q) => q.area.compareTo(p.area));
+  final components = _connectedComponents(
+    solid,
+    w,
+    h,
+    seedLabel,
+    eightConnected: false,
+  )..sort((p, q) => q.area.compareTo(p.area));
   final candidates = components
       .where((c) => c.area >= _minCandidateAreaFrac * n)
       .take(_maxPaperCandidates)
@@ -463,7 +503,17 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
   List<bool>? bestPaper;
   int bestInk = -1, bestArea = 0;
   for (final cand in candidates) {
-    final grown = _growPaper(cand.id, seedLabel, smooth, gray, red, green, blue, w, h);
+    final grown = _growPaper(
+      cand.id,
+      seedLabel,
+      smooth,
+      gray,
+      red,
+      green,
+      blue,
+      w,
+      h,
+    );
     final region = _rowSpanRegion(grown, w, h, 0);
     int inkCount = 0, area = 0;
     for (int i = 0; i < n; i++) {
@@ -480,8 +530,9 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
     }
   }
   final hasPaper = bestPaper != null && bestArea / n >= _minPaperAreaFrac;
-  final List<bool> paper =
-      (hasPaper && bestPaper != null) ? bestPaper : List<bool>.filled(n, true);
+  final List<bool> paper = (hasPaper && bestPaper != null)
+      ? bestPaper
+      : List<bool>.filled(n, true);
 
   int paperCount = 0;
   for (int i = 0; i < n; i++) {
@@ -494,17 +545,24 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
   // side gives a slanted border. A side cut off by the photo's edge
   // uses the photo's edge.
   final List<List<double>>? paperSmall = // detection-size pixels
-      (hasPaper && paperFrac < _fullFrameAreaFrac)
-          ? (_paperSideLines(paper, w, h) ?? _paperExtremeCorners(paper, w, h))
-          : null;
+  (hasPaper && paperFrac < _fullFrameAreaFrac)
+      ? (_paperSideLines(paper, w, h) ?? _paperExtremeCorners(paper, w, h))
+      : null;
   final List<List<double>>? paperQuad = paperSmall == null
       ? null
-      : [for (final p in paperSmall) [p[0] * scale, p[1] * scale]];
+      : [
+          for (final p in paperSmall) [p[0] * scale, p[1] * scale],
+        ];
 
   // ---- 2. TEXT AREA ----
   // Where to look: the paper's row spans (holes such as letters filled
   // in), widened a little.
-  final inside = _rowSpanRegion(paper, w, h, math.max(2, (_edgeWidenFrac * w).round()));
+  final inside = _rowSpanRegion(
+    paper,
+    w,
+    h,
+    math.max(2, (_edgeWidenFrac * w).round()),
+  );
   if (inside == null) return _fallback(result, paperQuad);
   final ink = List<bool>.filled(n, false);
   for (int i = 0; i < n; i++) {
@@ -515,17 +573,23 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
   // (table / shadow strips hugging the edge, notebook lines)
   final inkLabel = List<int>.filled(n, 0);
   final pieces = _connectedComponents(ink, w, h, inkLabel, eightConnected: true)
-      .where((c) =>
-          c.area >= 3 &&
-          c.width < 0.5 * w &&
-          c.height < 0.5 * h &&
-          c.area < 0.02 * n)
+      .where(
+        (c) =>
+            c.area >= 3 &&
+            c.width < 0.5 * w &&
+            c.height < 0.5 * h &&
+            c.area < 0.02 * n,
+      )
       .toList();
   if (pieces.isEmpty) return _fallback(result, paperQuad);
 
-  final sizes = pieces.map((c) => math.max(c.width, c.height).toDouble()).toList()..sort();
+  final sizes =
+      pieces.map((c) => math.max(c.width, c.height).toDouble()).toList()
+        ..sort();
   final letterSize = sizes[((sizes.length - 1) * 0.9).round()];
-  final significant = pieces.where((c) => math.max(c.width, c.height) >= 0.4 * letterSize);
+  final significant = pieces.where(
+    (c) => math.max(c.width, c.height) >= 0.4 * letterSize,
+  );
   final margin = math.max(_minTextMarginPx, _textMarginLetters * letterSize);
 
   if (paperSmall != null) {
@@ -555,8 +619,11 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
         final dx = p[0] - q[0], dy = p[1] - q[1];
         return math.sqrt(dx * dx + dy * dy);
       }
-      final double paperW = (dist(sheet[0], sheet[1]) + dist(sheet[3], sheet[2])) / 2;
-      final double paperH = (dist(sheet[0], sheet[3]) + dist(sheet[1], sheet[2])) / 2;
+
+      final double paperW =
+          (dist(sheet[0], sheet[1]) + dist(sheet[3], sheet[2])) / 2;
+      final double paperH =
+          (dist(sheet[0], sheet[3]) + dist(sheet[1], sheet[2])) / 2;
       if (u1 > u0 && v1 > v0 && paperW > 1 && paperH > 1) {
         u0 -= margin / paperW;
         u1 += margin / paperW;
@@ -582,7 +649,12 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
           ];
         }
 
-        result['quad'] = [back(u0, v0), back(u1, v0), back(u1, v1), back(u0, v1)];
+        result['quad'] = [
+          back(u0, v0),
+          back(u1, v0),
+          back(u1, v1),
+          back(u0, v1),
+        ];
         result['mode'] = 'text';
         return result;
       }
@@ -610,7 +682,10 @@ Map<String, dynamic> detectPaperCorners(Uint8List bytes) {
   return result;
 }
 
-Map<String, dynamic> _fallback(Map<String, dynamic> result, List<List<double>>? paperQuad) {
+Map<String, dynamic> _fallback(
+  Map<String, dynamic> result,
+  List<List<double>>? paperQuad,
+) {
   if (paperQuad != null) {
     result['quad'] = paperQuad;
     result['mode'] = 'paper';
@@ -631,9 +706,11 @@ List<bool> _smoothMask(List<int> gray, int w, int h) {
   final smooth = List<bool>.filled(w * h, false);
   for (int y = 0; y < h; y++) {
     for (int x = 0; x < w; x++) {
-      final gx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) -
+      final gx =
+          (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) -
           (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
-      final gy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) -
+      final gy =
+          (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) -
           (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
       smooth[y * w + x] = math.max(gx.abs(), gy.abs()) / 8 < _smoothEdgeLimit;
     }
@@ -657,7 +734,11 @@ List<double> _boxMean(List<int> gray, int w, int h, int r) {
     final ya = math.max(0, y - r), yb = math.min(h, y + r + 1);
     for (int x = 0; x < w; x++) {
       final xa = math.max(0, x - r), xb = math.min(w, x + r + 1);
-      final total = sum[yb * sw + xb] - sum[ya * sw + xb] - sum[yb * sw + xa] + sum[ya * sw + xa];
+      final total =
+          sum[yb * sw + xb] -
+          sum[ya * sw + xb] -
+          sum[yb * sw + xa] +
+          sum[ya * sw + xa];
       out[y * w + x] = total / ((yb - ya) * (xb - xa));
     }
   }
@@ -724,10 +805,19 @@ void _addShadedParts(
 
   final candidate = List<bool>.generate(n, (i) => smooth[i] && !paper[i]);
   final labels = List<int>.filled(n, 0);
-  final comps = _connectedComponents(candidate, w, h, labels, eightConnected: false);
+  final comps = _connectedComponents(
+    candidate,
+    w,
+    h,
+    labels,
+    eightConnected: false,
+  );
   final keep = <int>{};
   final minArea = _shadeMinAreaFrac * n;
-  final big = {for (final c in comps) if (c.area >= minArea) c.id: c};
+  final big = {
+    for (final c in comps)
+      if (c.area >= minArea) c.id: c,
+  };
   if (big.isEmpty) return;
 
   final touches = <int>{};
@@ -745,7 +835,8 @@ void _addShadedParts(
   for (final entry in big.entries) {
     final id = entry.key, area = entry.value.area;
     if (!touches.contains(id)) continue;
-    if (_histMedian(cHist[id]!, area) < _shadeMinBrightness * paperMedian) continue;
+    if (_histMedian(cHist[id]!, area) < _shadeMinBrightness * paperMedian)
+      continue;
     if ((cRg[id]! / area - paperRg).abs() > _shadeTintTolerance) continue;
     if ((cBg[id]! / area - paperBg).abs() > _shadeTintTolerance) continue;
     keep.add(id);
@@ -811,7 +902,13 @@ List<bool> _growPaper(
   return paper;
 }
 
-int _visit(int j, List<bool> paper, List<bool> smooth, List<int> queue, int tail) {
+int _visit(
+  int j,
+  List<bool> paper,
+  List<bool> smooth,
+  List<int> queue,
+  int tail,
+) {
   if (!paper[j] && smooth[j]) {
     paper[j] = true;
     queue[tail++] = j;
@@ -837,10 +934,15 @@ List<bool>? _rowSpanRegion(List<bool> mask, int w, int h, int d) {
   }
   if (firstRow < 0) return null;
   final out = List<bool>.filled(w * h, false);
-  for (int y = math.max(0, firstRow - d); y < math.min(h, lastRow + 1 + d); y++) {
+  for (
+    int y = math.max(0, firstRow - d);
+    y < math.min(h, lastRow + 1 + d);
+    y++
+  ) {
     final src = y < firstRow ? firstRow : (y > lastRow ? lastRow : y);
     if (rowStart[src] < 0) continue;
-    final a = math.max(0, rowStart[src] - d), b = math.min(w, rowEnd[src] + 1 + d);
+    final a = math.max(0, rowStart[src] - d),
+        b = math.min(w, rowEnd[src] + 1 + d);
     for (int x = a; x < b; x++) {
       out[y * w + x] = true;
     }
@@ -903,7 +1005,10 @@ List<List<double>>? _paperSideLines(List<bool> paper, int w, int h) {
     return [vl[0] * y + vl[1], y];
   }
 
-  final tl = cross(t, l), tr = cross(t, r), br = cross(bo, r), bl = cross(bo, l);
+  final tl = cross(t, l),
+      tr = cross(t, r),
+      br = cross(bo, r),
+      bl = cross(bo, l);
   if (tl == null || tr == null || br == null || bl == null) return null;
   final quad = [tl, tr, br, bl];
 
@@ -917,7 +1022,8 @@ List<List<double>>? _paperSideLines(List<bool> paper, int w, int h) {
     if (c.sign != sign) return null;
   }
   for (final p in quad) {
-    if (p[0] < -0.1 * w || p[0] > 1.1 * w || p[1] < -0.1 * h || p[1] > 1.1 * h) return null;
+    if (p[0] < -0.1 * w || p[0] > 1.1 * w || p[1] < -0.1 * h || p[1] > 1.1 * h)
+      return null;
   }
   double area = 0;
   for (int i = 0; i < 4; i++) {
@@ -950,7 +1056,10 @@ List<double>? _fitLine(List<List<double>> pts) {
     line = [a, b];
     final res = [for (final q in p) (q[1] - (a * q[0] + b)).abs()]..sort();
     final limit = math.max(2.0, res[((res.length - 1) * 0.8).round()]);
-    final kept = [for (final q in p) if ((q[1] - (a * q[0] + b)).abs() <= limit) q];
+    final kept = [
+      for (final q in p)
+        if ((q[1] - (a * q[0] + b)).abs() <= limit) q,
+    ];
     if (kept.length == p.length) break;
     p = kept;
   }
@@ -966,10 +1075,22 @@ List<List<double>>? _paperExtremeCorners(List<bool> paper, int w, int h) {
     for (int x = 0; x < w; x++) {
       if (!paper[y * w + x]) continue;
       final sum = (x + y).toDouble(), diff = (x - y).toDouble();
-      if (sum < bestTl) { bestTl = sum; tl = [x.toDouble(), y.toDouble()]; }
-      if (sum > bestBr) { bestBr = sum; br = [x.toDouble(), y.toDouble()]; }
-      if (diff > bestTr) { bestTr = diff; tr = [x.toDouble(), y.toDouble()]; }
-      if (-diff > bestBl) { bestBl = -diff; bl = [x.toDouble(), y.toDouble()]; }
+      if (sum < bestTl) {
+        bestTl = sum;
+        tl = [x.toDouble(), y.toDouble()];
+      }
+      if (sum > bestBr) {
+        bestBr = sum;
+        br = [x.toDouble(), y.toDouble()];
+      }
+      if (diff > bestTr) {
+        bestTr = diff;
+        tr = [x.toDouble(), y.toDouble()];
+      }
+      if (-diff > bestBl) {
+        bestBl = -diff;
+        bl = [x.toDouble(), y.toDouble()];
+      }
     }
   }
   if (tl == null || tr == null || br == null || bl == null) return null;
@@ -1000,9 +1121,15 @@ class _Homography {
       hh = (dx1 * dy3 - dx3 * dy1) / det;
     }
     return _Homography([
-      x1 - x0 + g * x1, x3 - x0 + hh * x3, x0,
-      y1 - y0 + g * y1, y3 - y0 + hh * y3, y0,
-      g, hh, 1,
+      x1 - x0 + g * x1,
+      x3 - x0 + hh * x3,
+      x0,
+      y1 - y0 + g * y1,
+      y3 - y0 + hh * y3,
+      y0,
+      g,
+      hh,
+      1,
     ]);
   }
 
@@ -1017,9 +1144,15 @@ class _Homography {
     final det = a[0] * c00 + a[1] * c01 + a[2] * c02;
     if (det.abs() < 1e-12) return null;
     return _Homography([
-      c00 / det, (a[2] * a[7] - a[1] * a[8]) / det, (a[1] * a[5] - a[2] * a[4]) / det,
-      c01 / det, (a[0] * a[8] - a[2] * a[6]) / det, (a[2] * a[3] - a[0] * a[5]) / det,
-      c02 / det, (a[1] * a[6] - a[0] * a[7]) / det, (a[0] * a[4] - a[1] * a[3]) / det,
+      c00 / det,
+      (a[2] * a[7] - a[1] * a[8]) / det,
+      (a[1] * a[5] - a[2] * a[4]) / det,
+      c01 / det,
+      (a[0] * a[8] - a[2] * a[6]) / det,
+      (a[2] * a[3] - a[0] * a[5]) / det,
+      c02 / det,
+      (a[1] * a[6] - a[0] * a[7]) / det,
+      (a[0] * a[4] - a[1] * a[3]) / det,
     ]);
   }
 }
@@ -1094,7 +1227,7 @@ Uint8List? rectifyQuad(Map<String, dynamic> args) {
   img.Image source = img.bakeOrientation(decoded);
   var q = [
     for (final p in (args['quad'] as List))
-      [(p[0] as num).toDouble(), (p[1] as num).toDouble()]
+      [(p[0] as num).toDouble(), (p[1] as num).toDouble()],
   ];
 
   double dist(List<double> a, List<double> b) =>
@@ -1114,7 +1247,9 @@ Uint8List? rectifyQuad(Map<String, dynamic> args) {
       height: math.max(1, (source.height * scale).round()),
       interpolation: img.Interpolation.average,
     );
-    q = [for (final p in q) [p[0] * scale, p[1] * scale]];
+    q = [
+      for (final p in q) [p[0] * scale, p[1] * scale],
+    ];
     outW *= scale;
     outH *= scale;
   }

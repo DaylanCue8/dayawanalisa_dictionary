@@ -21,11 +21,13 @@ class AppSettings extends ChangeNotifier {
   static const defaultResultFilter = 'HOG';
   static const defaultMinConfidence = 23.0;
   static const defaultLanguage = 'en';
+  static const defaultTheme = 'gradient';
 
   /// Accepted values, used to validate loaded and set values.
   static const cameraInputTypes = ['marker', 'pen'];
   static const resultFilters = ['Raw', 'Black and White', 'HOG'];
   static const languages = ['en', 'fil'];
+  static const themes = ['gradient', 'bold', 'embroidery'];
   static const minConfidenceRange = (min: 0.0, max: 90.0);
 
   SharedPreferences? _prefs;
@@ -48,6 +50,16 @@ class AppSettings extends ChangeNotifier {
     final valid = _oneOf(value, languages, defaultLanguage);
     languageNotifier.value = valid;
     _update(() {}, 'language', valid);
+  }
+
+  /// Visual theme: 'gradient', 'bold' (flat tones) or 'embroidery'. Its
+  /// own notifier, like the language, so a switch repaints the look live.
+  final ValueNotifier<String> themeNotifier = ValueNotifier(defaultTheme);
+  String get theme => themeNotifier.value;
+  set theme(String value) {
+    final valid = _oneOf(value, themes, defaultTheme);
+    themeNotifier.value = valid;
+    _update(() {}, 'theme', valid);
   }
 
   /// Whether the intro screens were already shown (first launch only).
@@ -106,6 +118,11 @@ class AppSettings extends ChangeNotifier {
       languages,
       defaultLanguage,
     );
+    themeNotifier.value = _oneOf(
+      _read(() => prefs.getString('theme')),
+      themes,
+      defaultTheme,
+    );
     notifyListeners();
   }
 
@@ -146,6 +163,7 @@ class AppSettings extends ChangeNotifier {
     _minConfidence = defaultMinConfidence;
     _hapticsEnabled = true;
     _reduceTransparency = false;
+    themeNotifier.value = defaultTheme;
     notifyListeners();
     try {
       await _prefs?.clear();

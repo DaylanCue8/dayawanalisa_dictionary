@@ -7,6 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../widgets/dayaw_style.dart' show DayawTheme;
 import 'app_language.dart';
 
 /// Formats the Baybayin result screen can export to.
@@ -198,6 +199,9 @@ class ResultExporter {
   // Same muted-honey palette as the app (see DayawColors).
   static const _deepBrown = PdfColor.fromInt(0xFF4E342E);
   static const _softBrown = PdfColor.fromInt(0xFF6D4C41);
+
+  /// The report follows the app's theme at the moment of export.
+  static bool get _gradientTheme => DayawTheme.current == DayawTheme.gradient;
   static const _amber = PdfColor.fromInt(0xFFD9A441);
   static const _yellow = PdfColor.fromInt(0xFFEBCB7C);
   static const _gold = PdfColor.fromInt(0xFFF3E3B3);
@@ -306,7 +310,10 @@ class ResultExporter {
       padding: const pw.EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: pw.BoxDecoration(
         borderRadius: pw.BorderRadius.circular(14),
-        gradient: const pw.LinearGradient(colors: [_deepBrown, _softBrown]),
+        color: _gradientTheme ? null : _deepBrown,
+        gradient: _gradientTheme
+            ? const pw.LinearGradient(colors: [_deepBrown, _softBrown])
+            : null,
       ),
       child: pw.Row(
         children: [
@@ -493,9 +500,12 @@ class ResultExporter {
                   vertical: 3,
                 ),
                 decoration: pw.BoxDecoration(
-                  gradient: const pw.LinearGradient(
-                    colors: [_gold, _yellow, _amber],
-                  ),
+                  color: _gradientTheme ? null : _yellow,
+                  gradient: _gradientTheme
+                      ? const pw.LinearGradient(
+                          colors: [_gold, _yellow, _amber],
+                        )
+                      : null,
                   borderRadius: pw.BorderRadius.circular(10),
                 ),
                 child: pw.Text(
@@ -570,9 +580,10 @@ class ResultExporter {
             padding: const pw.EdgeInsets.symmetric(vertical: 6),
             decoration: pw.BoxDecoration(
               borderRadius: pw.BorderRadius.circular(8),
-              gradient: const pw.LinearGradient(
-                colors: [_deepBrown, _softBrown],
-              ),
+              color: _gradientTheme ? null : _deepBrown,
+              gradient: _gradientTheme
+                  ? const pw.LinearGradient(colors: [_deepBrown, _softBrown])
+                  : null,
             ),
             child: pw.Column(
               children: [

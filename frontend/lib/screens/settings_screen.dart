@@ -25,7 +25,8 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen>
     with SingleTickerProviderStateMixin {
-  /// Drives the header shimmer, same timing as the translator tabs.
+  /// Drives the header shimmer (Gradient theme), same timing as the
+  /// translator tabs.
   late final AnimationController _ambient = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 3200),
@@ -169,20 +170,6 @@ class _SettingsScreenState extends State<SettingsScreen>
             title: context.tr('Experience', 'Karanasan'),
             icon: Icons.auto_awesome,
             children: [
-              _Tile(
-                icon: Icons.language,
-                title: context.tr('Language', 'Lengwahe'),
-                trailing: SizedBox(
-                  width: 150,
-                  child: _SmallSelector(
-                    labels: [for (final (_, name) in appLanguages) name],
-                    selectedIndex: appLanguages
-                        .indexWhere((l) => l.$1 == settings.language)
-                        .clamp(0, appLanguages.length - 1),
-                    onChanged: (i) => settings.language = appLanguages[i].$1,
-                  ),
-                ),
-              ),
               _SwitchTile(
                 icon: Icons.vibration,
                 title: context.tr('Haptic feedback', 'Pag-vibrate'),

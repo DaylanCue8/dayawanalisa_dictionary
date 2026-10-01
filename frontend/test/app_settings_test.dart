@@ -178,6 +178,31 @@ void main() {
     });
   });
 
+  group('theme', () {
+    test('defaults to gradient, loads and saves a valid theme', () async {
+      final (s, prefs) = await loadWith({});
+      expect(s.theme, 'gradient');
+      s.theme = 'embroidery';
+      await flushSaves();
+      expect(s.theme, 'embroidery');
+      expect(prefs.getString('theme'), 'embroidery');
+      expect((await loadWith({'theme': 'bold'})).$1.theme, 'bold');
+    });
+
+    test('an unknown theme falls back to gradient', () async {
+      expect((await loadWith({'theme': 'neon'})).$1.theme, 'gradient');
+      final (s, _) = await loadWith({});
+      s.theme = 'neon';
+      expect(s.theme, 'gradient');
+    });
+
+    test('reset returns to the default theme', () async {
+      final (s, _) = await loadWith({'theme': 'bold'});
+      await s.resetToDefaults();
+      expect(s.theme, 'gradient');
+    });
+  });
+
   group('storage failures never crash the app', () {
     late SharedPreferencesStorePlatform realStore;
     setUp(() => realStore = SharedPreferencesStorePlatform.instance);

@@ -4,6 +4,7 @@ import 'screens/dayaw_landing_screen.dart';
 import 'screens/intro_screen.dart';
 import 'services/app_language.dart';
 import 'services/app_settings.dart'; // Import the file you just created
+import 'widgets/dayaw_style.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,7 +41,8 @@ class DayawApp extends StatelessWidget {
       scrollBehavior: const _BouncyScrollBehavior(),
       // Every route, dialog and sheet sits under this, so text switches
       // language live.
-      builder: (context, child) => LanguageScope(child: child!),
+      builder: (context, child) =>
+          ThemeScope(child: LanguageScope(child: child!)),
       theme: ThemeData(
         useMaterial3: true,
         colorSchemeSeed: Colors.brown,

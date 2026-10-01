@@ -159,8 +159,6 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
     }
   }
 
-  // Both header capsules share one size and shape, so the logo and the
-  // language button read as a matching pair.
   static const double _capsuleHeight = 54;
   static const BorderRadius _capsuleRadius = BorderRadius.all(
     Radius.circular(_capsuleHeight / 2),
@@ -170,11 +168,20 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
   );
 
   Widget _buildHeader() {
-    // Logo capsule on the left, language button on the right.
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _buildHeaderIconButton(
+                icon: Icons.language,
+                tooltip: context.tr('Language', 'Lengwahe'),
+                onTap: _openLanguagePicker,
+              ),
+            ),
+          ),
           GlassContainer(
             height: _capsuleHeight,
             borderRadius: _capsuleRadius,
@@ -183,61 +190,48 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
               child: Image.asset(
                 'assets/images/dayawlogo.png',
                 height: 42,
-                errorBuilder: (ctx, err, stack) {
-                  return const Text(
-                    "DAYAW",
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 22,
-                      color: Colors.brown,
-                    ),
-                  );
-                },
+                errorBuilder: (ctx, err, stack) => const Text(
+                  'DAYAW',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 22,
+                    color: Colors.brown,
+                  ),
+                ),
               ),
             ),
           ),
-          const Spacer(),
-          _buildLanguageButton(),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _buildHeaderIconButton(
+                icon: Icons.palette_outlined,
+                tooltip: context.tr('Theme', 'Tema'),
+                onTap: _openThemePicker,
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  /// "Language" / "Lengwahe" button (plain, no glass panel); opens the
-  /// English / Filipino picker. Same height as the logo capsule so the
-  /// two stay aligned.
-  Widget _buildLanguageButton() {
+  Widget _buildHeaderIconButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
     return Material(
       color: Colors.transparent,
-      child: InkWell(
-        onTap: _openLanguagePicker,
-        borderRadius: _capsuleRadius,
-        child: Container(
-          height: _capsuleHeight,
-          padding: _capsulePadding,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.language,
-                color: DayawColors.deepBrown,
-                size: 20,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                context.tr('Language', 'Lengwahe'),
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: DayawColors.deepBrown,
-                ),
-              ),
-              const SizedBox(width: 2),
-              const Icon(
-                Icons.expand_more,
-                color: DayawColors.deepBrown,
-                size: 20,
-              ),
-            ],
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: _capsuleRadius,
+          child: SizedBox(
+            width: _capsuleHeight,
+            height: _capsuleHeight,
+            child: Icon(icon, color: DayawColors.deepBrown, size: 24),
           ),
         ),
       ),
@@ -309,5 +303,63 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
       ),
     );
     if (code != null) AppSettings.instance.language = code;
+  }
+
+  Future<void> _openThemePicker() async {
+    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    final theme = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassContainer(
+            tint: const Color(0xE6FFFBF5),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DayawSectionTitle(
+                  context.tr('Theme', 'Tema'),
+                  Icons.palette_outlined,
+                ),
+                const SizedBox(height: 8),
+                for (final theme in DayawTheme.values)
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    title: Text(
+                      _themeLabel(context, theme),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: DayawColors.deepBrown,
+                      ),
+                    ),
+                    trailing: AppSettings.instance.theme == theme.name
+                        ? const Icon(
+                            Icons.check_circle,
+                            color: DayawColors.amber,
+                          )
+                        : null,
+                    onTap: () => Navigator.of(context).pop(theme.name),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (theme != null) AppSettings.instance.theme = theme;
+  }
+
+  String _themeLabel(BuildContext context, DayawTheme theme) {
+    switch (theme) {
+      case DayawTheme.gradient:
+        return context.tr('Gradient', 'Gradient');
+      case DayawTheme.bold:
+        return context.tr('Bold', 'Patag');
+      case DayawTheme.embroidery:
+        return context.tr('Embroidery', 'Burda');
+    }
   }
 }
