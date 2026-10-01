@@ -183,7 +183,9 @@ final class DayawImageRecognizer {
     format.scale = 1
     format.opaque = true
     let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
-    let oriented = renderer.image { source.draw(in: CGRect(origin: .zero, size: pixelSize)) }
+    let oriented = renderer.image { _ in
+      source.draw(in: CGRect(origin: .zero, size: pixelSize))
+    }
     guard let cgImage = oriented.cgImage else {
       throw NSError(domain: "DayawImageRecognizer", code: 2,
                     userInfo: [NSLocalizedDescriptionKey: "Could not decode image"])
@@ -286,7 +288,8 @@ final class DayawImageRecognizer {
           let smallerWidth = max(1, min(first.width, second.width))
           let verticalGap = first.y1 <= second.y0 ? second.y0 - first.y1 :
             (second.y1 <= first.y0 ? first.y0 - second.y1 : 0)
-          let gapLimit = min(max(first.height, second.height) * 3, max(1, medianHeight * 2.5))
+          let gapLimit = min(max(first.height, second.height) * 3,
+                             max(1, Int(Double(medianHeight) * 2.5)))
           if Double(small) / Double(max(1, big)) <= 0.45 &&
               Double(overlap) / Double(smallerWidth) >= 0.3 && verticalGap <= gapLimit {
             boxes[i] = DayawBox(x0: min(first.x0, second.x0), y0: min(first.y0, second.y0),
