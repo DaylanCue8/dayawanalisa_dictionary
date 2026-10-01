@@ -4,6 +4,7 @@ import UIKit
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private let offlineModels = DayawOfflineModels()
+  private lazy var imageRecognizer = DayawImageRecognizer(models: offlineModels)
 
   override func application(
     _ application: UIApplication,
@@ -25,6 +26,42 @@ import UIKit
         return
       }
       switch call.method {
+      case "recognize":
+        guard let arguments = call.arguments as? [String: Any],
+              let rawImage = arguments["image"] else {
+          result(FlutterError(code: "NO_IMAGE", message: "No image bytes were sent", details: nil))
+          return
+        }
+        let imageData: Data?
+        if let typedData = rawImage as? FlutterStandardTypedData {
+          imageData = typedData.data
+        } else if let data = rawImage as? Data {
+          imageData = data
+        } else if let bytes = rawImage as? [UInt8] {
+          imageData = Data(bytes)
+        } else {
+          imageData = nil
+        }
+        guard let imageData else {
+          result(FlutterError(code: "INVALID_IMAGE", message: "Expected image bytes", details: nil))
+          return
+        }
+        let inputType = arguments["inputType"] as? String ?? "marker"
+        DispatchQueue.global(qos: .userInitiated).async {
+          do {
+            let output = try self.imageRecognizer.recognize(
+              imageData: imageData, inputType: inputType
+            )
+            let json = try JSONSerialization.data(withJSONObject: output)
+            DispatchQueue.main.async {
+              result(String(data: json, encoding: .utf8))
+            }
+          } catch {
+            DispatchQueue.main.async {
+              result(FlutterError(code: "MODEL_ERROR", message: error.localizedDescription, details: nil))
+            }
+          }
+        }
       case "warmUp":
         DispatchQueue.global(qos: .userInitiated).async {
           do {

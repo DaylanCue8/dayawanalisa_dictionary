@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		A10000010000000000000001 /* DayawSVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000001 /* DayawSVM.swift */; };
+		A10000010000000000000004 /* DayawImageRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000004 /* DayawImageRecognizer.swift */; };
 		A10000010000000000000002 /* model_base.bin in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000002 /* model_base.bin */; };
 		A10000010000000000000003 /* model_dia.bin in Resources */ = {isa = PBXBuildFile; fileRef = A10000020000000000000003 /* model_dia.bin */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
@@ -52,6 +53,7 @@
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A10000020000000000000001 /* DayawSVM.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DayawSVM.swift; sourceTree = "<group>"; };
+		A10000020000000000000004 /* DayawImageRecognizer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DayawImageRecognizer.swift; sourceTree = "<group>"; };
 		A10000020000000000000002 /* model_base.bin */ = {isa = PBXFileReference; lastKnownFileType = file; path = Models/model_base.bin; sourceTree = "<group>"; };
 		A10000020000000000000003 /* model_dia.bin */ = {isa = PBXFileReference; lastKnownFileType = file; path = Models/model_dia.bin; sourceTree = "<group>"; };
 		7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
@@ -125,6 +127,7 @@
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				A10000020000000000000001 /* DayawSVM.swift */,
+				A10000020000000000000004 /* DayawImageRecognizer.swift */,
 				A10000020000000000000002 /* model_base.bin */,
 				A10000020000000000000003 /* model_dia.bin */,
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
@@ -284,6 +287,7 @@
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				A10000010000000000000001 /* DayawSVM.swift in Sources */,
+				A10000010000000000000004 /* DayawImageRecognizer.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 			);

@@ -103,6 +103,15 @@ final class DayawSVM {
   }
 
   func predict(features: [Double]) -> (classIndex: Int, classValue: Int) {
+    let result = predictWithConfidence(features: features)
+    return (result.classIndex, result.classValue)
+  }
+
+  func predictWithConfidence(features: [Double]) -> (
+    classIndex: Int,
+    classValue: Int,
+    confidence: Double
+  ) {
     precondition(features.count == featureCount)
     let classCount = supportCount.count
     let starts = supportCount.reduce(into: [0]) { result, count in
@@ -129,10 +138,15 @@ final class DayawSVM {
       }
     }
 
+    let rankedVotes = votes.sorted(by: >)
     let best = votes.enumerated().max { left, right in
       left.element < right.element
     }!.offset
-    return (best, classes[best])
+    let winner = Double(rankedVotes.first ?? 0)
+    let runnerUp = Double(rankedVotes.dropFirst().first ?? 0)
+    let pairCount = Double(max(1, classCount * (classCount - 1) / 2))
+    let margin = max(0.0, winner - runnerUp) / pairCount
+    return (best, classes[best], min(1.0, 0.5 + margin))
   }
 
   private func kernel(features: [Double], support: Int) -> Double {
@@ -159,5 +173,14 @@ final class DayawOfflineModels {
     try warmUp()
     let result = try (diacriticFeatures ? diacritic : base)!.predict(features: features)
     return ["classIndex": result.classIndex, "classValue": result.classValue]
+  }
+
+  func classifyDetailed(features: [Double], diacriticFeatures: Bool) throws -> (
+    classIndex: Int,
+    classValue: Int,
+    confidence: Double
+  ) {
+    try warmUp()
+    return try (diacriticFeatures ? diacritic : base)!.predictWithConfidence(features: features)
   }
 }
