@@ -1,16 +1,23 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show applyBoxFit, FittedSizes;
-import 'package:image/image.dart' as img;
+import 'package:flutter/services.dart';
 import '../services/api_service.dart';
+import '../services/app_language.dart';
+import '../services/app_settings.dart';
 import '../services/offline_recognizer.dart';
+import '../services/recognition_outcome.dart';
 import '../widgets/image_cropper_widget.dart';
 import '../screens/camera_capture_screen.dart';
 import '../screens/baybayin_result_screen.dart';
+import '../screens/multi_page_result_screen.dart';
+import '../widgets/dayaw_style.dart';
+import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
 
+
+const bool kShowCrashReports = false;
 /// Handles the "Baybayin to Latin" mode: capture/upload a photo, crop it,
 /// send it for translation, and show the result. Fully self-contained —
 /// owns its own state, independent of the text-translation mode.
@@ -41,11 +48,29 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   Timer? _factTimer;
   int _factIndex = 0;
 
+  // DEBUG (Objective 3): shows whether each scanned image was saved.
+  StreamSubscription<String>? _evalSub;
+  
+
   @override
   void initState() {
     super.initState();
     // Load the models in the background so the first scan isn't slow
     if (_useOfflineRecognizer) OfflineRecognizer.warmUp();
+    if (kSaveEvalCopies) {
+      _evalSub = OfflineRecognizer.evalStatus.listen((message) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 6),
+            backgroundColor: message.contains('FAILED')
+                ? Colors.red[700]
+                : Colors.green[700],
+          ),
+        );
+      });
+    }
     _factTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       if (mounted) {
         setState(() => _factIndex = (_factIndex + 1) % _facts.length);
@@ -56,6 +81,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   @override
   void dispose() {
     _factTimer?.cancel();
+    _evalSub?.cancel();
     _ambient.dispose();
     super.dispose();
   }
@@ -75,37 +101,19 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   // swipe right-to-left on the image).
   Map<String, dynamic>? _lastResultData;
 
+  // Multi-page scan: every page and its result, in order. Empty for a
+  // normal single-photo scan.
+  List<ScannedPage> _scannedPages = [];
+  bool get _isMultiPage => _scannedPages.length > 1;
+
+  // Shown in the loading pill instead of "Reading strokes" (e.g. which
+  // page is being read).
+  String? _loadingLabel;
+
   // Swipe-left tracking (finger position when it touched the image)
   Offset? _swipeStart;
   Offset? _tabSwipeStart;
   static const double _swipeMinDistance = 60; // logical pixels
-
-  /// Bakes the EXIF orientation into the actual pixel data (rotating/
-  /// flipping as needed) and strips the orientation tag, producing a
-  /// single normalized image. This MUST happen before the image is
-  /// either displayed or uploaded, so:
-  ///   1. What the user sees on screen,
-  ///   2. What bytes get sent to the backend, and
-  ///   3. The (width, height) + bounding boxes the backend computes,
-  /// are all guaranteed to agree on the same pixel grid. Without this,
-  /// a backend that EXIF-corrects (as this one does, via
-  /// ImageOps.exif_transpose) can compute boxes against a rotated
-  /// image while Flutter's Image.memory displays the raw, un-rotated
-  /// bytes - causing exactly the kind of misaligned boxes you'd see
-  /// with any camera photo carrying an EXIF orientation tag.
-  ///
-  /// Kept even for the custom camera screen: some devices still embed
-  /// EXIF orientation on captured JPEGs, so this stays as a safety net
-  /// regardless of capture source.
-  Uint8List _normalizeOrientation(Uint8List bytes) {
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) return bytes;
-    final oriented = img.bakeOrientation(decoded);
-    // Quality bumped from 90 to 95 - this re-encode happens on every
-    // capture regardless of source, so keep it as close to lossless
-    // as practical for thin-stroke detail.
-    return Uint8List.fromList(img.encodeJpg(oriented, quality: 95));
-  }
 
   Future<void> _processCroppedImage(
     Uint8List imageBytes, {
@@ -113,9 +121,14 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   }) async {
     setState(() {
       _isLoading = true;
-      _translatedResult = 'Processing Image...';
+      _translatedResult = tr(
+        'Processing Image...',
+        'Pinoproseso ang larawan...',
+      );
       _detections = [];
       _lastResultData = null;
+      _scannedPages = [];
+      _loadingLabel = null;
     });
 
     final response = _useOfflineRecognizer
@@ -128,54 +141,103 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           );
 
     if (!mounted) return;
+    _showPreviousCrash(response);
 
+    final outcome = RecognitionOutcome.of(response);
+    final text = response?['translated_text']?.toString() ?? '';
     setState(() {
       _isLoading = false;
-      if (response != null) {
-        _translatedResult = response['translated_text'] ?? 'No result';
-
-        final rawDetections = response['individual_detections'] as List? ?? [];
-        _detections = rawDetections
-            .whereType<Map>()
-            .map((d) => Map<String, dynamic>.from(d))
-            .where((d) => d['bbox'] != null)
-            .toList();
-        _imageWidth = (response['image_width'] as num?)?.toDouble() ?? 0;
-        _imageHeight = (response['image_height'] as num?)?.toDouble() ?? 0;
-
-        // Non-null only when the photo's letters came out too small
-        // for diacritics to reliably survive segmentation (see
-        // LOW_RESOLUTION_WARNING_THRESHOLD_PX in the backend) - a
-        // resolution issue with THIS photo, not a translation error,
-        // so it's shown alongside the result rather than replacing it.
-        final lowResolutionWarning =
-            response['low_resolution_warning'] as String?;
-        if (lowResolutionWarning != null && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(lowResolutionWarning),
-              duration: const Duration(seconds: 5),
-              backgroundColor: Colors.orange[800],
-            ),
-          );
-        }
-
-        String status = response['status']?.toString().toLowerCase() ?? '';
-        if (status == 'success' || status == 'low_confidence') {
-          _lastResultData = response;
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) _showResults(imageBytes, response);
-          });
-        } else if (status == 'no_characters' || _translatedResult.isEmpty) {
-          _translatedResult = 'No Baybayin letters found. Try a clearer crop.';
-        }
+      _detections = scannedDetections(
+        response,
+      ).where((d) => d['bbox'] != null).toList();
+      _imageWidth = readNumber(response, 'image_width');
+      _imageHeight = readNumber(response, 'image_height');
+      if (outcome.hasText && text.isNotEmpty) {
+        _translatedResult = text;
+        _lastResultData = response;
       } else {
-        _translatedResult = _useOfflineRecognizer
-            ? 'Error: Could not process the image'
-            : 'Error: Connection Failed';
+        // Every non-result outcome gets its own, actionable message.
+        _translatedResult = outcome.hasText
+            ? _outcomeMessage(RecognitionOutcome.noCharacters)
+            : _outcomeMessage(outcome);
       }
     });
+
+    // Non-null only when the photo's letters came out too small for
+    // diacritics to reliably survive segmentation - a resolution issue
+    // with THIS photo, not an error, so it's shown next to the result.
+    final lowResolutionWarning = response?['low_resolution_warning'];
+    if (lowResolutionWarning is String && lowResolutionWarning.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(lowResolutionWarning),
+          duration: const Duration(seconds: 5),
+          backgroundColor: Colors.orange[800],
+        ),
+      );
+    }
+
+    final result = _lastResultData;
+    if (result != null) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) _showResults(imageBytes, result);
+      });
+    }
   }
+
+  static bool _crashShown = false;
+
+  /// If the app crashed during the last scan, the recognizer recorded the
+  /// Python line it was on (crash_trace.txt). Shows it once so it can be
+  /// screenshotted and sent for debugging.
+  void _showPreviousCrash(Map<String, dynamic>? response) {
+    if (!kShowCrashReports) return;
+    final crash = response?['previous_crash'];
+    if (_crashShown || crash is! String || crash.trim().isEmpty) return;
+    _crashShown = true;
+    debugPrint('[offline] PREVIOUS CRASH:\n$crash');
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Last crash report'),
+        content: SingleChildScrollView(
+          child: SelectableText(crash, style: const TextStyle(fontSize: 11)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// What to tell the person when a scan produced no text.
+  String _outcomeMessage(RecognitionOutcome outcome) => switch (outcome) {
+    RecognitionOutcome.noCharacters ||
+    RecognitionOutcome.success ||
+    RecognitionOutcome.lowConfidence => tr(
+      'No Baybayin letters found. Try a clearer crop.',
+      'Walang nakitang titik ng Baybayin. Subukan ang mas malinaw na crop.',
+    ),
+    RecognitionOutcome.blurry => tr(
+      'The photo is too blurry. Hold the phone steady and scan again.',
+      'Masyadong malabo ang larawan. Hawakan nang matatag ang phone at '
+          'mag-scan muli.',
+    ),
+    RecognitionOutcome.invalidImage => tr(
+      'That image could not be opened. Please take the photo again.',
+      'Hindi mabuksan ang larawang iyon. Pakikunan muli.',
+    ),
+    RecognitionOutcome.failed =>
+      _useOfflineRecognizer
+          ? tr(
+              'Error: Could not process the image. Please try again.',
+              'Error: Hindi maproseso ang larawan. Pakisubukan muli.',
+            )
+          : tr('Error: Connection Failed', 'Error: Hindi makakonekta'),
+  };
 
   /// Shared camera pipeline: normalize orientation, let the user crop, then
   /// run the offline recognizer.
@@ -185,10 +247,10 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   }) async {
     if (!mounted) return;
 
-    // Normalize orientation BEFORE cropping, so the crop UI itself
-    // (and everything downstream of it) works against the same
-    // pixel grid the backend will later compute boxes against.
-    final bytes = _normalizeOrientation(rawBytes);
+    // The camera screen already fixed the rotation (bakeOrientation) and
+    // cropped to the guide box, so the cropper opens right away - no
+    // extra decode here (that made the home screen flash in between).
+    final bytes = rawBytes;
 
     final Uint8List? croppedBytes = await Navigator.of(context).push<Uint8List>(
       MaterialPageRoute(builder: (_) => ImageCropperScreen(imageData: bytes)),
@@ -198,7 +260,10 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
 
     setState(() {
       _isLoading = true;
-      _translatedResult = 'Processing Image...';
+      _translatedResult = tr(
+        'Processing Image...',
+        'Pinoproseso ang larawan...',
+      );
       _detections = [];
       // Orientation is already normalized above, and cropping doesn't
       // introduce any new orientation metadata, so these bytes, what
@@ -214,20 +279,192 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   /// preset and lock focus/exposure before capture - neither of which
   /// the OS camera app exposes to us.
   Future<void> _captureFromCamera() async {
+    if (AppSettings.instance.hapticsEnabled) HapticFeedback.lightImpact();
     final CameraCaptureResult? captured = await Navigator.of(context)
         .push<CameraCaptureResult>(
           MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
         );
     if (captured == null) return;
 
-    await _handleRawImage(captured.imageBytes, inputType: captured.inputType);
+    if (captured.isMultiPage) {
+      await _processPages(captured.pages, inputType: captured.inputType);
+    } else {
+      await _handleRawImage(captured.imageBytes, inputType: captured.inputType);
+    }
   }
 
+  /// Multi-page scan: every page is opened in the cropper one by one
+  /// (page 1, crop, Apply -> page 2, crop, Apply ...). Then the pages are
+  /// read one after another (the on-phone recognizer handles one image at
+  /// a time) and shown together. Closing the cropper skips that page.
+  Future<void> _processPages(
+    List<Uint8List> allPages, {
+    required String inputType,
+  }) async {
+    if (allPages.isEmpty) return;
+    // The camera already stops at the limit; this is a safety net.
+    final capturedPages = allPages.take(CameraCaptureScreen.maxPages).toList();
+
+    // ---- Step 1: crop each page, one at a time ----
+    final rawPages = <Uint8List>[];
+    var skipped = 0;
+    for (var i = 0; i < capturedPages.length; i++) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              tr(
+                'Crop page ${i + 1} of ${capturedPages.length}',
+                'I-crop ang pahina ${i + 1} ng ${capturedPages.length}',
+              ),
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      final Uint8List? cropped = await Navigator.of(context).push<Uint8List>(
+        MaterialPageRoute(
+          builder: (_) => ImageCropperScreen(imageData: capturedPages[i]),
+        ),
+      );
+      if (cropped == null) {
+        skipped++; // closed the cropper -> skip this page
+      } else {
+        rawPages.add(cropped);
+      }
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    if (rawPages.isEmpty) return; // every page was skipped
+    if (skipped > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            tr(
+              '$skipped ${skipped == 1 ? 'page was' : 'pages were'} skipped.',
+              'Nilaktawan ang $skipped pahina.',
+            ),
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+
+    // ---- Step 2: read the cropped pages ----
+    setState(() {
+      _isLoading = true;
+      _webImage = rawPages.first;
+      _translatedResult = tr(
+        'Processing ${rawPages.length} pages...',
+        'Pinoproseso ang ${rawPages.length} pahina...',
+      );
+      _detections = [];
+      _lastResultData = null;
+      _scannedPages = [];
+    });
+
+    final scanned = <ScannedPage>[];
+    for (var i = 0; i < rawPages.length; i++) {
+      setState(
+        () => _loadingLabel = tr(
+          'Reading page ${i + 1} of ${rawPages.length}',
+          'Binabasa ang pahina ${i + 1} ng ${rawPages.length}',
+        ),
+      );
+      // One bad page must not sink the whole scan: it's kept as an
+      // unread page (shown with a warning) and the rest carry on.
+      // Already rotated by the camera and straightened by the cropper.
+      final page = rawPages[i];
+      Map<String, dynamic>? response;
+      try {
+        response = _useOfflineRecognizer
+            ? await OfflineRecognizer.recognize(page, inputType: inputType)
+            : await _apiService.uploadAndTranslateDetailed(
+                null,
+                'Baybayin to Tagalog',
+                imageBytes: page,
+                inputType: inputType,
+              );
+      } catch (_) {
+        response = null;
+      }
+      if (!mounted) return;
+      scanned.add(ScannedPage(page, response));
+    }
+
+    final unread = scanned.where((p) => !p.isRead).length;
+    if (unread > 0 && unread < scanned.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            tr(
+              '$unread of ${scanned.length} pages could not be read. '
+                  'They are marked on the results screen.',
+              'Hindi nabasa ang $unread sa ${scanned.length} pahina. '
+                  'Nakamarka ang mga ito sa resulta.',
+            ),
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+
+    final first = scanned.first;
+    final combined = MultiPageResultScreen.combinedText(scanned);
+    setState(() {
+      _isLoading = false;
+      _loadingLabel = null;
+      _scannedPages = scanned;
+      // The scanner card shows page 1, with its own boxes.
+      _detections = first.detections.where((d) => d['bbox'] != null).toList();
+      _imageWidth = readNumber(first.data, 'image_width');
+      _imageHeight = readNumber(first.data, 'image_height');
+      if (scanned.any((p) => p.isRead)) {
+        _translatedResult = combined;
+        _lastResultData = {
+          'translated_text': combined,
+          'confidence': MultiPageResultScreen.combinedConfidence(scanned),
+          'status': 'success',
+        };
+      } else {
+        _translatedResult = tr(
+          'No Baybayin letters found on any page. Try clearer photos.',
+          'Walang nakitang titik ng Baybayin sa anumang pahina. '
+              'Subukan ang mas malinaw na larawan.',
+        );
+      }
+    });
+
+    if (_lastResultData != null) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) _openLastResult(haptic: false);
+      });
+    }
+  }
+
+  /// Total characters across every page of the current scan.
+  int get _characterCount => _isMultiPage
+      ? _scannedPages.fold<int>(0, (n, p) => n + p.detections.length)
+      : _detections.length;
+
   /// Opens the result screen again for the last photo (if there is one).
-  void _openLastResult() {
+  void _openLastResult({bool haptic = true}) {
     final image = _webImage;
     final data = _lastResultData;
     if (_isLoading || image == null || data == null) return;
+    if (haptic && AppSettings.instance.hapticsEnabled) {
+      HapticFeedback.selectionClick();
+    }
+    if (_isMultiPage) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => MultiPageResultScreen(pages: _scannedPages),
+        ),
+      );
+      return;
+    }
     _showResults(image, data);
   }
 
@@ -240,10 +477,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         builder: (_) => BaybayinResultScreen(
           sourceImage: sourceImage,
           translatedText: data['translated_text']?.toString() ?? '',
-          detections: (data['individual_detections'] as List? ?? [])
-              .whereType<Map>()
-              .map((d) => Map<String, dynamic>.from(d))
-              .toList(),
+          // Sanitized: malformed boxes/confidences can't crash the screen.
+          detections: scannedDetections(data),
           // The backend's reported dimensions for THIS response - these
           // already exist in state (_imageWidth/_imageHeight, set right
           // above from the same response) but were never being passed
@@ -252,8 +487,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           // between the backend's coordinate space and its own local
           // decode of sourceImage, which is what caused crops to land
           // on the wrong sub-region (e.g. showing only half a letter).
-          imageWidth: (data['image_width'] as num?)?.toDouble() ?? 0,
-          imageHeight: (data['image_height'] as num?)?.toDouble() ?? 0,
+          imageWidth: readNumber(data, 'image_width'),
+          imageHeight: readNumber(data, 'image_height'),
         ),
       ),
     );
@@ -268,34 +503,53 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   // either an action, the result, or something that helps the next scan.
   // ---------------------------------------------------------------------
 
-  static const Color _amber = Color(0xFFFFB300);
-  static const Color _gold = Color(0xFFFFFF00);
-  // Rich lemon yellow - the lead accent. Gradients run amber -> _yellow ->
-  // _gold so they stay warm but read as clearly yellow.
-  static const Color _yellow = Color(0xFFFFE000);
-  static const Color _deepBrown = Color(0xFF4E342E);
+  // Shared muted-honey palette (see DayawColors).
+  static const Color _amber = DayawColors.amber;
+  static const Color _gold = DayawColors.gold;
+  static const Color _yellow = DayawColors.yellow;
+  static const Color _deepBrown = DayawColors.deepBrown;
 
-  static const List<(IconData, Color, String)> _tips = [
-    (Icons.edit, Color(0xFF263238), 'Black ink'),
-    (Icons.description_outlined, Color(0xFF5C6BC0), 'Plain white paper'),
-    (Icons.space_bar, Color(0xFF26A69A), 'Space out letters'),
-    (Icons.more_horiz, Color(0xFFEF6C00), 'Clear kudlits'),
-    (Icons.wb_sunny_outlined, Color(0xFFF9A825), 'No glare or shadow'),
-    (Icons.crop_free, Color(0xFF8E24AA), 'Fill the frame'),
+  // (icon, English, Filipino)
+  static const List<(IconData, String, String)> _tips = [
+    (Icons.edit, 'Black ink', 'Itim na tinta'),
+    (Icons.description_outlined, 'Plain white paper', 'Payak na puting papel'),
+    (Icons.space_bar, 'Space out letters', 'Paglayuin ang mga titik'),
+    (Icons.more_horiz, 'Clear kudlits', 'Malinaw na kudlit'),
+    (Icons.wb_sunny_outlined, 'No glare or shadow', 'Walang silaw o anino'),
+    (Icons.crop_free, 'Fill the frame', 'Punuin ang frame'),
   ];
 
-  static const List<(String, String)> _facts = [
+  // (Baybayin sample, English, Filipino)
+  static const List<(String, String, String)> _facts = [
     (
       'ᜊᜌ᜔ᜊᜌᜒᜈ᜔',
       '"Baybayin" comes from "baybay", the Tagalog word for "to spell".',
+      'Ang "Baybayin" ay mula sa "baybay", ang salitang Tagalog para sa '
+          '"pagbaybay".',
     ),
     (
       'ᜃ ᜃᜒ ᜃᜓ',
       'A kudlit above a letter turns its "a" into "e/i"; below, into "o/u".',
+      'Ang kudlit sa itaas ng titik ay ginagawang "e/i" ang "a"; sa ibaba, '
+          'nagiging "o/u".',
     ),
-    ('ᜃ᜔', 'The cross-shaped kudlit, added in 1620, removes the vowel sound.'),
-    ('ᜇ', 'D and R share one letter in Baybayin - context tells them apart.'),
-    ('ᜀ ᜁ ᜂ', 'Baybayin has 17 basic letters: 3 vowels and 14 consonants.'),
+    (
+      'ᜃ᜔',
+      'The cross-shaped kudlit, added in 1620, removes the vowel sound.',
+      'Ang kudlit na hugis-krus, idinagdag noong 1620, ay nag-aalis ng '
+          'tunog ng patinig.',
+    ),
+    (
+      'ᜇ',
+      'D and R share one letter in Baybayin - context tells them apart.',
+      'Iisang titik ang D at R sa Baybayin - ang konteksto ang nagtatangi '
+          'sa kanila.',
+    ),
+    (
+      'ᜀ ᜁ ᜂ',
+      'Baybayin has 17 basic letters: 3 vowels and 14 consonants.',
+      'May 17 pangunahing titik ang Baybayin: 3 patinig at 14 katinig.',
+    ),
   ];
 
   /// 0..1..0 once per ambient loop - for breathing / pulsing.
@@ -307,7 +561,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     final overall = data['confidence'];
     if (overall is num) return overall.toDouble();
     final values = _detections
-        .map((d) => (d['confidence'] as num?)?.toDouble())
+        .map((d) => readNumber(d, 'confidence'))
         .whereType<double>()
         .toList();
     if (values.isEmpty) return 0;
@@ -315,9 +569,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   }
 
   Color _confidenceColor(double confidence) {
-    if (confidence >= 90) return const Color(0xFF2E7D32);
-    if (confidence >= 75) return const Color(0xFFEF6C00);
-    return const Color(0xFFC62828);
+    if (confidence >= 90) return const Color(0xFF5E8B5A);
+    if (confidence >= 75) return const Color(0xFFC2873F);
+    return const Color(0xFFB35C52);
   }
 
   @override
@@ -336,97 +590,53 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           _buildResultCard(),
         ],
         const SizedBox(height: 28),
-        _sectionTitle('Tips for a perfect scan', Icons.auto_awesome),
+        _sectionTitle(
+          context.tr(
+            'Tips for a perfect scan',
+            'Mga tip para sa magandang scan',
+          ),
+          Icons.auto_awesome,
+        ),
         const SizedBox(height: 12),
         _buildTips(),
         const SizedBox(height: 28),
-        _sectionTitle('Did you know?', Icons.lightbulb_outline),
+        _sectionTitle(
+          context.tr('Did you know?', 'Alam mo ba?'),
+          Icons.lightbulb_outline,
+        ),
         const SizedBox(height: 12),
         _buildFactCard(),
       ],
     );
   }
 
-  Widget _sectionTitle(String text, IconData icon) {
-    return Row(
-      children: [
-        // Yellow-to-amber gradient icon.
-        ShaderMask(
-          shaderCallback: (bounds) => const LinearGradient(
-            colors: [Color(0xFFFFC400), Color(0xFFFF8F00)],
-          ).createShader(bounds),
-          child: Icon(icon, size: 20, color: Colors.white),
-        ),
-        const SizedBox(width: 6),
-        Flexible(
-          child: Text(
-            text,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w800,
-              color: _deepBrown,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
+  Widget _sectionTitle(String text, IconData icon) =>
+      DayawSectionTitle(text, icon);
 
   /// Title with a gradient headline and a strip of Baybayin that gently
   /// shimmers, so the screen feels alive before anything is scanned.
   Widget _buildHeroHeader() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ShaderMask(
-          shaderCallback: (bounds) => const LinearGradient(
-            // Ends in a deep golden yellow (not pure yellow, which would
-            // vanish on the cream background).
-            colors: [_deepBrown, Color(0xFFE08E00), Color(0xFFF5B800)],
-          ).createShader(bounds),
-          child: const Text(
-            'Read the ancient script',
-            style: TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.w900,
-              color: Colors.white,
-              height: 1.1,
-            ),
-          ),
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'Snap handwritten Baybayin and get Filipino in seconds.',
-          style: TextStyle(fontSize: 13, color: Colors.black54),
-        ),
-        const SizedBox(height: 8),
-        AnimatedBuilder(
-          animation: _ambient,
-          builder: (context, _) => ShaderMask(
-            shaderCallback: (bounds) => LinearGradient(
-              begin: Alignment(-1 + 3 * _ambient.value - 1, 0),
-              end: Alignment(1 + 3 * _ambient.value - 1, 0),
-              colors: const [Color(0x66795548), _yellow, Color(0x66795548)],
-            ).createShader(bounds),
-            child: const Text(
-              'ᜊᜌ᜔ᜊᜌᜒᜈ᜔ · ᜇᜌᜏ᜔ · ᜆᜄᜎᜓᜄ᜔',
-              style: TextStyle(
-                fontFamily: 'BaybayinCustom',
-                fontSize: 20,
-                color: Colors.white,
-                letterSpacing: 2,
-              ),
-            ),
-          ),
-        ),
-      ],
+    return DayawHeroHeader(
+      title: context.tr(
+        'Read the ancient script',
+        'Basahin ang sinaunang titik',
+      ),
+      subtitle: context.tr(
+        'Snap handwritten Baybayin and get Latin letters in seconds.',
+        'Kunan ng larawan ang sulat-kamay na Baybayin at makuha ang titik '
+            'Latin sa ilang segundo.',
+      ),
+      baybayin: 'ᜊᜌ᜔ᜊᜌᜒᜈ᜔ · ᜇᜌᜏ᜔ · ᜆᜄᜎᜓᜄ᜔',
+      shimmer: _ambient,
     );
   }
 
   /// The photo (or the empty scanner), framed by a slowly rotating
   /// gradient glow.
   Widget _buildScannerCard() {
+    // Gradient: rotating honey ring. Bold: solid amber ring. Embroidery:
+    // an amber hoop stitch, drawn over the photo too like a frame.
+    final embroidered = DayawTheme.of(context) == DayawTheme.embroidery;
     return RepaintBoundary(
       child: AnimatedBuilder(
         animation: _ambient,
@@ -434,36 +644,51 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           final glow = _isLoading ? 1.0 : 0.35 + 0.35 * _breath;
           return Container(
             height: 300,
-            padding: const EdgeInsets.all(2.5),
+            padding: embroidered ? null : const EdgeInsets.all(2.5),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(26),
-              gradient: SweepGradient(
-                transform: GradientRotation(2 * math.pi * _ambient.value),
-                colors: const [
-                  // Starts and ends on the same yellow so the rotating
-                  // seam is invisible.
-                  _yellow,
-                  _amber,
-                  _gold,
-                  _yellow,
-                  Color(0xFFFF8F00),
-                  _gold,
-                  _yellow,
-                ],
+              color: embroidered ? const Color(0xFFFFFBF5) : _amber,
+              gradient: themedGradient(
+                SweepGradient(
+                  transform: GradientRotation(2 * math.pi * _ambient.value),
+                  colors: const [
+                    // Starts and ends on the same yellow so the rotating
+                    // seam is invisible.
+                    _yellow,
+                    _amber,
+                    _gold,
+                    _yellow,
+                    Color(0xFFB9853A),
+                    _gold,
+                    _yellow,
+                  ],
+                ),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: _yellow.withValues(alpha: 0.55 * glow),
-                  blurRadius: 22 + 18 * glow,
-                  spreadRadius: 2 + 2 * glow,
+                  color: _yellow.withValues(alpha: 0.3 * glow),
+                  blurRadius: 16 + 10 * glow,
+                  spreadRadius: glow,
                 ),
               ],
             ),
-            child: child,
+            child: embroidered
+                ? CustomPaint(
+                    foregroundPainter: const StitchBorderPainter(
+                      color: Thread.amber,
+                      radius: 26,
+                      inset: 7,
+                      stitch: 9,
+                      gap: 5,
+                      width: 2.4,
+                    ),
+                    child: child,
+                  )
+                : child,
           );
         },
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(23.5),
+          borderRadius: BorderRadius.circular(embroidered ? 26 : 23.5),
           child: ColoredBox(
             color: const Color(0xFFFFFBF5),
             child: Stack(
@@ -528,16 +753,19 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               Container(
                 width: 84,
                 height: 84,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [_gold, _yellow, _amber],
+                  color: _yellow,
+                  gradient: themedGradient(
+                    const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [_gold, _yellow, _amber],
+                    ),
                   ),
-                  boxShadow: [
+                  boxShadow: const [
                     BoxShadow(
-                      color: Color(0x88FFC400),
+                      color: Color(0x44D9A441),
                       blurRadius: 22,
                       offset: Offset(0, 8),
                     ),
@@ -552,7 +780,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               Positioned(
                 bottom: 22,
                 child: Text(
-                  'Tap to start scanning',
+                  context.tr('Tap to start scanning', 'I-tap para mag-scan'),
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
@@ -604,14 +832,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         child: Container(
           height: 3,
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                _amber.withValues(alpha: 0),
-                _yellow.withValues(alpha: faint ? 0.75 : 1),
-                _gold,
-                _yellow.withValues(alpha: faint ? 0.75 : 1),
-                _amber.withValues(alpha: 0),
-              ],
+            color: _amber.withValues(alpha: faint ? 0.75 : 1),
+            gradient: themedGradient(
+              LinearGradient(
+                colors: [
+                  _amber.withValues(alpha: 0),
+                  _yellow.withValues(alpha: faint ? 0.75 : 1),
+                  _gold,
+                  _yellow.withValues(alpha: faint ? 0.75 : 1),
+                  _amber.withValues(alpha: 0),
+                ],
+              ),
             ),
             boxShadow: [
               BoxShadow(
@@ -697,7 +928,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                               ),
                               const SizedBox(width: 10),
                               Text(
-                                'Reading strokes${'.' * (1 + (_ambient.value * 3).floor() % 3)}',
+                                '${_loadingLabel ?? context.tr('Reading strokes', 'Binabasa ang mga guhit')}'
+                                '${'.' * (1 + (_ambient.value * 3).floor() % 3)}',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.w600,
@@ -719,7 +951,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
 
   /// Big breathing gradient button - the one obvious next step.
   Widget _buildScanButton() {
-    final label = _webImage == null ? 'Scan with Camera' : 'Scan Again';
+    final label = _webImage == null
+        ? context.tr('Scan with Camera', 'I-scan gamit ang Kamera')
+        : context.tr('Scan Again', 'Mag-scan Muli');
     return AnimatedBuilder(
       animation: _ambient,
       builder: (context, child) => Transform.scale(
@@ -728,14 +962,17 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           height: 58,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(29),
-            // Yellow gradient whose bright band slowly drifts back and
+            // Honey gradient whose bright band slowly drifts back and
             // forth, like light moving across it.
-            gradient: LinearGradient(
-              begin: Alignment(-1.6 + 1.2 * _breath, 0),
-              end: Alignment(1.6 + 1.2 * _breath, 0),
-              colors: _isLoading
-                  ? [Colors.grey.shade400, Colors.grey.shade500]
-                  : const [_amber, _yellow, _gold, _yellow, _amber],
+            color: _isLoading ? Colors.grey.shade400 : _yellow,
+            gradient: themedGradient(
+              LinearGradient(
+                begin: Alignment(-1.6 + 1.2 * _breath, 0),
+                end: Alignment(1.6 + 1.2 * _breath, 0),
+                colors: _isLoading
+                    ? [Colors.grey.shade400, Colors.grey.shade500]
+                    : const [_amber, _yellow, _gold, _yellow, _amber],
+              ),
             ),
             border: Border.all(
               color: Colors.white.withValues(alpha: _isLoading ? 0 : 0.7),
@@ -745,7 +982,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               BoxShadow(
                 color: const Color(
                   0xFFFFC400,
-                ).withValues(alpha: _isLoading ? 0 : 0.45 + 0.3 * _breath),
+                ).withValues(alpha: _isLoading ? 0 : 0.2 + 0.15 * _breath),
                 blurRadius: 18 + 14 * _breath,
                 offset: const Offset(0, 8),
               ),
@@ -790,7 +1027,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         padding: const EdgeInsets.all(18),
         child: Row(
           children: [
-            const Icon(Icons.info_outline, color: Color(0xFFEF6C00)),
+            const Icon(Icons.info_outline, color: Color(0xFFC2873F)),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -805,7 +1042,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
 
     final confidence = _confidenceScore;
     final color = _confidenceColor(confidence);
-    final characters = _detections.length;
+    final characters = _characterCount;
     final words = _translatedResult
         .split(RegExp(r'\s+'))
         .where((w) => w.isNotEmpty)
@@ -826,7 +1063,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
       ),
       child: GlassContainer(
         padding: const EdgeInsets.all(18),
-        // Yellow-tinted glass so the result card glows with the accent.
+        // Lightly honey-tinted glass for the result card.
         tint: const Color(0xA6FFF4B8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -839,17 +1076,18 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [_gold, _yellow, _amber],
+                    color: _yellow,
+                    gradient: themedGradient(
+                      const LinearGradient(colors: [_gold, _yellow, _amber]),
                     ),
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: const [
-                      BoxShadow(color: Color(0x66FFC400), blurRadius: 10),
+                      BoxShadow(color: Color(0x33D9A441), blurRadius: 8),
                     ],
                   ),
-                  child: const Text(
-                    'LAST CAPTURED',
-                    style: TextStyle(
+                  child: Text(
+                    context.tr('LAST CAPTURED', 'HULING KUHA'),
+                    style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w900,
                       letterSpacing: 1,
@@ -876,12 +1114,29 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               spacing: 8,
               runSpacing: 8,
               children: [
-                _statChip(Icons.text_fields, '$characters characters'),
+                if (_isMultiPage)
+                  _statChip(
+                    Icons.auto_stories_outlined,
+                    context.tr(
+                      '${_scannedPages.length} pages',
+                      '${_scannedPages.length} pahina',
+                    ),
+                  ),
+                _statChip(
+                  Icons.text_fields,
+                  context.tr('$characters characters', '$characters karakter'),
+                ),
                 _statChip(
                   Icons.short_text,
-                  '$words ${words == 1 ? 'word' : 'words'}',
+                  context.tr(
+                    '$words ${words == 1 ? 'word' : 'words'}',
+                    '$words salita',
+                  ),
                 ),
-                _statChip(Icons.offline_bolt_outlined, 'On-device'),
+                _statChip(
+                  Icons.offline_bolt_outlined,
+                  context.tr('On-device', 'Sa device'),
+                ),
               ],
             ),
             const SizedBox(height: 16),
@@ -898,8 +1153,16 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                   ),
                 ),
                 icon: const Icon(Icons.grid_view_rounded, size: 18),
-                label: const Text(
-                  'View character breakdown',
+                label: Text(
+                  _isMultiPage
+                      ? context.tr(
+                          'View all pages',
+                          'Tingnan ang lahat ng pahina',
+                        )
+                      : context.tr(
+                          'View character breakdown',
+                          'Tingnan ang bawat karakter',
+                        ),
                   style: TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
@@ -949,11 +1212,14 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _yellow.withValues(alpha: 0.55),
-            _gold.withValues(alpha: 0.35),
-          ],
+        color: _yellow.withValues(alpha: 0.45),
+        gradient: themedGradient(
+          LinearGradient(
+            colors: [
+              _yellow.withValues(alpha: 0.55),
+              _gold.withValues(alpha: 0.35),
+            ],
+          ),
         ),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: _amber.withValues(alpha: 0.5)),
@@ -986,27 +1252,29 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         itemCount: _tips.length,
         separatorBuilder: (_, _) => const SizedBox(width: 10),
         itemBuilder: (context, i) {
-          final (icon, color, label) = _tips[i];
+          final (icon, en, fil) = _tips[i];
+          final label = context.tr(en, fil);
           return Container(
             width: 112,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(18),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                // Each tip keeps its own color at the top, flowing into a
-                // shared yellow wash, so the row reads as one yellow family.
-                colors: [
-                  color.withValues(alpha: 0.16),
-                  _yellow.withValues(alpha: 0.28),
-                  _gold.withValues(alpha: 0.45),
-                ],
+              color: Colors.white.withValues(alpha: 0.7),
+              gradient: themedGradient(
+                LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  // One quiet sand wash for every tip, so the row stays calm.
+                  colors: [
+                    Colors.white.withValues(alpha: 0.7),
+                    _gold.withValues(alpha: 0.45),
+                  ],
+                ),
               ),
-              border: Border.all(color: _yellow.withValues(alpha: 0.9)),
+              border: Border.all(color: _yellow.withValues(alpha: 0.6)),
               boxShadow: const [
                 BoxShadow(
-                  color: Color(0x33FFC400),
+                  color: Color(0x33D9A441),
                   blurRadius: 10,
                   offset: Offset(0, 4),
                 ),
@@ -1019,10 +1287,10 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                   width: 32,
                   height: 32,
                   decoration: BoxDecoration(
-                    color: color,
+                    color: _deepBrown,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(icon, color: Colors.white, size: 18),
+                  child: Icon(icon, color: _gold, size: 18),
                 ),
                 const Spacer(),
                 Text(
@@ -1046,7 +1314,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   /// Rotating fact with a big Baybayin sample; slides/fades between facts
   /// and shows which one you're on.
   Widget _buildFactCard() {
-    final (sample, fact) = _facts[_factIndex];
+    final (sample, factEn, factFil) = _facts[_factIndex];
+    final fact = context.tr(factEn, factFil);
     return GestureDetector(
       // Tap to skip to the next fact.
       onTap: () =>
@@ -1055,17 +1324,20 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(22),
-          gradient: const LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            // Dark brown warming into a golden corner.
-            colors: [_deepBrown, Color(0xFF8D4A2B), Color(0xFFC77800)],
-            stops: [0, 0.6, 1],
+          color: _deepBrown,
+          gradient: themedGradient(
+            const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              // Dark brown easing into a softer brown corner.
+              colors: [_deepBrown, Color(0xFF6D4C41), Color(0xFF8A6A4A)],
+              stops: [0, 0.6, 1],
+            ),
           ),
           border: Border.all(color: _yellow.withValues(alpha: 0.7), width: 1.5),
           boxShadow: const [
             BoxShadow(
-              color: Color(0x55FFC400),
+              color: Color(0x33D9A441),
               blurRadius: 22,
               offset: Offset(0, 10),
             ),
@@ -1135,7 +1407,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                   ),
                 const Spacer(),
                 Text(
-                  'Tap for next',
+                  context.tr('Tap for next', 'I-tap para sa susunod'),
                   style: TextStyle(
                     fontSize: 11,
                     color: Colors.white.withValues(alpha: 0.6),
@@ -1183,16 +1455,16 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
             ),
           ],
         ),
-        child: const Column(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.chevron_left, color: Colors.white, size: 22),
-            SizedBox(height: 6),
+            const Icon(Icons.chevron_left, color: Colors.white, size: 22),
+            const SizedBox(height: 6),
             RotatedBox(
               quarterTurns: 3,
               child: Text(
-                'RESULT',
-                style: TextStyle(
+                context.tr('RESULT', 'RESULTA'),
+                style: const TextStyle(
                   color: Colors.white,
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
@@ -1200,8 +1472,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                 ),
               ),
             ),
-            SizedBox(height: 6),
-            Icon(Icons.chevron_left, color: Colors.white, size: 22),
+            const SizedBox(height: 6),
+            const Icon(Icons.chevron_left, color: Colors.white, size: 22),
           ],
         ),
       ),

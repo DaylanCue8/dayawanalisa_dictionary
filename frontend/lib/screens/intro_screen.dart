@@ -3,8 +3,12 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../services/app_language.dart';
+import 'legal_screen.dart';
 import '../services/app_settings.dart';
 import '../services/tagalog_to_baybayin_local_translator.dart';
+import '../widgets/dayaw_style.dart';
+import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
 import 'dayaw_landing_screen.dart';
 
@@ -126,9 +130,9 @@ class _IntroScreenState extends State<IntroScreen>
                       duration: const Duration(milliseconds: 250),
                       child: TextButton(
                         onPressed: isLast ? null : _finish,
-                        child: const Text(
-                          'Skip',
-                          style: TextStyle(
+                        child: Text(
+                          context.tr('Skip', 'Laktawan'),
+                          style: const TextStyle(
                             color: _deepBrown,
                             fontWeight: FontWeight.w700,
                           ),
@@ -146,6 +150,15 @@ class _IntroScreenState extends State<IntroScreen>
                       _parallax(2, _buildWritePage()),
                       _parallax(3, _buildOfflinePage()),
                     ],
+                  ),
+                ),
+                // Last page: what tapping "Get Started" agrees to.
+                AnimatedOpacity(
+                  opacity: isLast ? 1 : 0,
+                  duration: const Duration(milliseconds: 250),
+                  child: IgnorePointer(
+                    ignoring: !isLast,
+                    child: _buildLegalNotice(),
                   ),
                 ),
                 _buildBottomBar(isLast),
@@ -171,6 +184,17 @@ class _IntroScreenState extends State<IntroScreen>
   // ---------------------------------------------------------------------
 
   Widget _buildDriftingBackground() {
+    switch (DayawTheme.of(context)) {
+      case DayawTheme.bold:
+        return const ColoredBox(color: DayawColors.paper);
+      case DayawTheme.embroidery:
+        return const LinenBackground(
+          color: DayawColors.paper,
+          child: SizedBox.expand(),
+        );
+      case DayawTheme.gradient:
+        break;
+    }
     return AnimatedBuilder(
       animation: _drift,
       builder: (context, _) {
@@ -324,8 +348,11 @@ class _IntroScreenState extends State<IntroScreen>
                           height: 3,
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(2),
-                            gradient: const LinearGradient(
-                              colors: [_amber, _yellow, _gold],
+                            color: _amber,
+                            gradient: themedGradient(
+                              const LinearGradient(
+                                colors: [_amber, _yellow, _gold],
+                              ),
                             ),
                             boxShadow: const [
                               BoxShadow(
@@ -342,9 +369,9 @@ class _IntroScreenState extends State<IntroScreen>
                       opacity: afterglow,
                       child: Transform.translate(
                         offset: Offset(0, 12 * (1 - afterglow)),
-                        child: const Column(
+                        child: Column(
                           children: [
-                            Text(
+                            const Text(
                               'ᜇᜌᜏ᜔',
                               style: TextStyle(
                                 fontFamily: 'BaybayinCustom',
@@ -353,19 +380,25 @@ class _IntroScreenState extends State<IntroScreen>
                                 letterSpacing: 4,
                               ),
                             ),
-                            SizedBox(height: 10),
+                            const SizedBox(height: 10),
                             Text(
-                              'Pride in our own script.',
-                              style: TextStyle(
+                              context.tr(
+                                'Pride in our own script.',
+                                'Dangal sa sarili nating panitik.',
+                              ),
+                              style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w600,
                                 color: _deepBrown,
                               ),
                             ),
-                            SizedBox(height: 4),
+                            const SizedBox(height: 4),
                             Text(
-                              'Read and write Baybayin, anywhere.',
-                              style: TextStyle(
+                              context.tr(
+                                'Read and write Baybayin, anywhere.',
+                                'Magbasa at magsulat ng Baybayin, saanman.',
+                              ),
+                              style: const TextStyle(
                                 fontSize: 13,
                                 color: Colors.black54,
                               ),
@@ -466,15 +499,18 @@ class _IntroScreenState extends State<IntroScreen>
                     child: Container(
                       height: 3,
                       margin: const EdgeInsets.symmetric(horizontal: 30),
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            Color(0x00FFE000),
-                            _yellow,
-                            Color(0x00FFE000),
-                          ],
+                      decoration: BoxDecoration(
+                        color: _yellow,
+                        gradient: themedGradient(
+                          const LinearGradient(
+                            colors: [
+                              Color(0x00FFE000),
+                              _yellow,
+                              Color(0x00FFE000),
+                            ],
+                          ),
                         ),
-                        boxShadow: [
+                        boxShadow: const [
                           BoxShadow(color: Color(0xAAFFE000), blurRadius: 12),
                         ],
                       ),
@@ -485,10 +521,16 @@ class _IntroScreenState extends State<IntroScreen>
           );
         },
       ),
-      title: 'Scan handwritten Baybayin',
-      body:
-          'Point your camera at Baybayin writing and read it in Filipino, '
-          'letter by letter.',
+      title: context.tr(
+        'Scan handwritten Baybayin',
+        'I-scan ang sulat-kamay na Baybayin',
+      ),
+      body: context.tr(
+        'Point your camera at Baybayin writing and read it in Latin letters, '
+            'one character at a time.',
+        'Itutok ang kamera sa sulat na Baybayin at basahin ito sa titik '
+            'Latin, isa-isang karakter.',
+      ),
     );
   }
 
@@ -518,9 +560,9 @@ class _IntroScreenState extends State<IntroScreen>
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text(
+                  Text(
                     'FILIPINO',
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 11,
                       letterSpacing: 1.2,
                       fontWeight: FontWeight.w800,
@@ -606,10 +648,16 @@ class _IntroScreenState extends State<IntroScreen>
           );
         },
       ),
-      title: 'Turn Filipino into Baybayin',
-      body:
-          'Type anything in Filipino and watch it become Baybayin, '
-          'syllable by syllable.',
+      title: context.tr(
+        'Turn Filipino into Baybayin',
+        'Gawing Baybayin ang Filipino',
+      ),
+      body: context.tr(
+        'Type anything in Filipino and watch it become Baybayin, '
+            'syllable by syllable.',
+        'Mag-type ng kahit ano sa Filipino at panoorin itong maging '
+            'Baybayin, pantig por pantig.',
+      ),
     );
   }
 
@@ -641,18 +689,36 @@ class _IntroScreenState extends State<IntroScreen>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _featureBadge(Icons.wifi_off_rounded, 'Offline', pulse),
-                _featureBadge(Icons.lock_outline_rounded, 'Private', pulse),
-                _featureBadge(Icons.bolt_rounded, 'Fast', pulse),
+                _featureBadge(
+                  Icons.wifi_off_rounded,
+                  context.tr('Offline', 'Offline'),
+                  pulse,
+                ),
+                _featureBadge(
+                  Icons.lock_outline_rounded,
+                  context.tr('Private', 'Pribado'),
+                  pulse,
+                ),
+                _featureBadge(
+                  Icons.bolt_rounded,
+                  context.tr('Fast', 'Mabilis'),
+                  pulse,
+                ),
               ],
             ),
           );
         },
       ),
-      title: 'No internet? No problem.',
-      body:
-          'Everything runs right on your phone. Your photos and text never '
-          'leave it.',
+      title: context.tr(
+        'No internet? No problem.',
+        'Walang internet? Walang problema.',
+      ),
+      body: context.tr(
+        'Everything runs right on your phone. Your photos and text never '
+            'leave it.',
+        'Lahat ay tumatakbo mismo sa iyong phone. Hindi kailanman lumalabas '
+            'dito ang iyong mga larawan at teksto.',
+      ),
     );
   }
 
@@ -665,10 +731,13 @@ class _IntroScreenState extends State<IntroScreen>
           height: 64,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [_gold, _yellow, _amber],
+            color: _yellow,
+            gradient: themedGradient(
+              const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [_gold, _yellow, _amber],
+              ),
             ),
             boxShadow: [
               BoxShadow(
@@ -696,6 +765,44 @@ class _IntroScreenState extends State<IntroScreen>
   // ---------------------------------------------------------------------
   // Bottom bar - page dots + next / get started
   // ---------------------------------------------------------------------
+
+  /// "By continuing, you agree to the Terms of Use and Privacy & Data",
+  /// with both names tappable.
+  Widget _buildLegalNotice() {
+    Widget link(LegalDocument document) => GestureDetector(
+      onTap: () => LegalScreen.open(context, document),
+      child: Text(
+        document.title(context),
+        style: const TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w800,
+          color: _deepBrown,
+          decoration: TextDecoration.underline,
+        ),
+      ),
+    );
+    const plain = TextStyle(fontSize: 12.5, color: Colors.black54);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 4, 28, 0),
+      child: Wrap(
+        alignment: WrapAlignment.center,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        spacing: 4,
+        children: [
+          Text(
+            context.tr(
+              'By continuing, you agree to the',
+              'Sa pagpapatuloy, sumasang-ayon ka sa',
+            ),
+            style: plain,
+          ),
+          link(LegalDocument.terms),
+          Text(context.tr('and', 'at'), style: plain),
+          link(LegalDocument.privacy),
+        ],
+      ),
+    );
+  }
 
   Widget _buildBottomBar(bool isLast) {
     return Padding(
@@ -737,8 +844,9 @@ class _IntroScreenState extends State<IntroScreen>
               width: isLast ? 180 : 58,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(29),
-                gradient: const LinearGradient(
-                  colors: [_amber, _yellow, _gold],
+                color: _yellow,
+                gradient: themedGradient(
+                  const LinearGradient(colors: [_amber, _yellow, _gold]),
                 ),
                 border: Border.all(color: Colors.white.withValues(alpha: 0.7)),
                 boxShadow: const [
@@ -757,12 +865,12 @@ class _IntroScreenState extends State<IntroScreen>
                   child: ClipRect(
                     child: Center(
                       child: isLast
-                          ? const Text(
-                              'Get Started',
+                          ? Text(
+                              context.tr('Get Started', 'Magsimula'),
                               maxLines: 1,
                               softWrap: false,
                               overflow: TextOverflow.clip,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 color: _deepBrown,
                                 fontSize: 17,
                                 fontWeight: FontWeight.w900,
@@ -810,14 +918,23 @@ class _HandwrittenWord extends StatelessWidget {
       children: [
         ClipRect(
           clipper: _RevealClipper(progress),
-          child: ShaderMask(
-            shaderCallback: (bounds) => const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF4E342E), Color(0xFF8D4A2B), Color(0xFFC77800)],
-            ).createShader(bounds),
-            child: Text(text, style: style),
-          ),
+          child: DayawTheme.of(context) == DayawTheme.gradient
+              ? ShaderMask(
+                  shaderCallback: (bounds) => const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xFF4E342E),
+                      Color(0xFF8D4A2B),
+                      Color(0xFFC77800),
+                    ],
+                  ).createShader(bounds),
+                  child: Text(text, style: style),
+                )
+              : Text(
+                  text,
+                  style: style.copyWith(color: const Color(0xFF4E342E)),
+                ),
         ),
         if (penVisible)
           Positioned.fill(

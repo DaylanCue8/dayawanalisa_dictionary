@@ -48,6 +48,44 @@ class _SafeCV2:
 
 
 cv2 = _SafeCV2(_cv2_raw)
+
+
+# ---- SAFE DILATION (no OpenCV) ----
+# OpenCV's dilate in the Android OpenCV 4.5.1 build can crash the app
+# (SIGSEGV) when the kernel is about as big as the image - e.g. a 45x45
+# kernel on a small single-letter crop (seen in the phone crash report:
+# dilate inside find_glyph_clusters). The over-read happens in OpenCV's own
+# buffers, so the padding guard above cannot help. Every dilation here uses
+# a rectangle kernel, which is just a "max over a box" - done below in
+# NumPy instead. Gives exactly the same result as OpenCV (checked).
+def _max_along(a, k, axis):
+    if k <= 1:
+        return a.copy()
+    n = a.shape[axis]
+    anchor = k // 2                      # same anchor OpenCV uses
+    out = a.copy()
+    for off in range(-anchor, k - anchor):
+        if off == 0 or abs(off) >= n:
+            continue
+        dst = [slice(None)] * a.ndim
+        src = [slice(None)] * a.ndim
+        if off > 0:
+            dst[axis], src[axis] = slice(0, n - off), slice(off, n)
+        else:
+            dst[axis], src[axis] = slice(-off, n), slice(0, n + off)
+        view = out[tuple(dst)]
+        np.maximum(view, a[tuple(src)], out=view)
+    return out
+
+
+def _dilate_rect(img, ksize):
+    """Same as dilating with getStructuringElement(MORPH_RECT, ksize), in
+    NumPy. ksize is (width, height) like OpenCV."""
+    img = np.ascontiguousarray(img)
+    if img.size == 0:
+        return img.copy()
+    out = _max_along(img, int(ksize[0]), axis=1)
+    return _max_along(out, int(ksize[1]), axis=0)
 from PIL import Image as PILImage, ImageOps
 try:
     from skimage.feature import hog
@@ -154,6 +192,7 @@ NOISE_MIN_PIECES_FOR_STATS = 3      # need at least 3 letter-sized pieces to jud
 NOISE_SMALL_FRAC = 0.35             # piece < 35% of L (both sides) = "small"
 NOISE_KUDLIT_REACH_FRAC = 0.6       # small piece within 0.6 L above/below a letter = kudlit, keep
 NOISE_KUDLIT_SIDE_FRAC = 0.1        # ... and horizontally within 0.1 L of that letter
+NOISE_KUDLIT_OWNER_MAX_FRAC = 3.0  # a kudlit's letter may be up to 3 L wide (Nga is wide)
 NOISE_MIN_MARK_AREA_STROKES = 0.5   # ink area < 0.5 x stroke^2 = too tiny even for a pen dot
 NOISE_LINE_LONG_FRAC = 3.0          # longer than 3 L ...
 NOISE_LINE_THIN_FRAC = 0.5          # ... and thinner than 0.5 L = notebook / margin line
@@ -220,7 +259,9 @@ def remove_noise(binary_img, debug=False):
 
     # Rule 1: small pieces. Real letters left after rules 2-4 are the
     # only things a kudlit can belong to (not a notebook line / edge).
-    letters = np.where(big & ~remove & (np.maximum(ws, hs) <= 2 * letter_h))[0]
+    # (wide letters such as Nga can be ~2x as wide as they are tall, so the
+    #  owner of a kudlit may be up to NOISE_KUDLIT_OWNER_MAX_FRAC x L wide)
+    letters = np.where(big & ~remove & (np.maximum(ws, hs) <= NOISE_KUDLIT_OWNER_MAX_FRAC * letter_h))[0]
     reach = NOISE_KUDLIT_REACH_FRAC * letter_h
     side = NOISE_KUDLIT_SIDE_FRAC * letter_h
     min_mark_area = NOISE_MIN_MARK_AREA_STROKES * stroke * stroke
@@ -298,6 +339,98 @@ def background_texture_ratio(gray_rot, all_ink_rot, glyph_mask, x0, y0, pad):
     return spread / contrast
 
 
+
+# ---- "ON THE PAPER?" COLOUR CHECK ----
+# A textured table / mat / cloth at the edge of the photo can pass the
+# check above when the pattern is dense (almost everything around it turns
+# black, so its "background" looks flat). The surface is still a different
+# COLOUR from the paper: paper is near-gray (white, or gray in a shadow),
+# a wooden table or woven mat is brown/coloured. So for each glyph the
+# saturation (colourfulness) of the area around it is compared with the
+# paper's: much more colourful = the glyph is on the surface, not the paper.
+# Shadows on the paper stay gray, so letters in shadows are kept.
+OFF_PAPER_SAT_DIFF = 40        # 0-255 scale; paper ~0-40, brown mat ~90-150
+OFF_PAPER_WORK_SIDE = 800      # colour is checked on a small copy (fast)
+OFF_PAPER_MIN_VALUE = 50       # ignore very dark pixels (their colour is noise)
+
+
+class _PaperColour:
+    def __init__(self, image_bytes, work_w, work_h):
+        pil = PILImage.open(io.BytesIO(image_bytes))
+        pil = ImageOps.exif_transpose(pil).convert('RGB')
+        pil.thumbnail((OFF_PAPER_WORK_SIDE, OFF_PAPER_WORK_SIDE))
+        hsv = np.array(pil.convert('HSV'))
+        self.sat = hsv[..., 1]
+        self.val = hsv[..., 2]
+        self.fx = self.sat.shape[1] / float(max(1, work_w))
+        self.fy = self.sat.shape[0] / float(max(1, work_h))
+        bright = self.val >= 0.85 * float(np.percentile(self.val, 90))
+        self.paper_sat = float(np.median(self.sat[bright])) if bright.any() else 0.0
+
+    @classmethod
+    def from_bytes(cls, image_bytes, work_w, work_h):
+        try:
+            return cls(image_bytes, work_w, work_h)
+        except Exception:
+            return None          # never let this check break recognition
+
+    def saturation_above_paper(self, box, pad):
+        """How much more colourful the area of box (x0, y0, x1, y1, in the
+        working image) plus a margin is than the paper. 0 = same as paper."""
+        x0, y0, x1, y1 = box
+        H, W = self.sat.shape[:2]
+        ix0, iy0 = int(x0 * self.fx), int(y0 * self.fy)
+        ix1, iy1 = int(np.ceil(x1 * self.fx)), int(np.ceil(y1 * self.fy))
+        p = max(2, int(round(pad * self.fx)))
+        ex0, ey0 = max(0, ix0 - p), max(0, iy0 - p)
+        ex1, ey1 = min(W, ix1 + p), min(H, iy1 + p)
+        if ex1 <= ex0 or ey1 <= ey0:
+            return 0.0
+        # the glyph's own box AND the margin around it: a piece of a mat
+        # strip can be as wide as the strip itself, so the margin alone
+        # may be mostly paper. Ink is only a small part of a letter's box,
+        # so the median is the colour of what the letter is written on.
+        sat = self.sat[ey0:ey1, ex0:ex1]
+        keep = self.val[ey0:ey1, ex0:ex1] >= OFF_PAPER_MIN_VALUE
+        area = sat[keep]
+        if area.size < 10:
+            return 0.0
+        return float(np.median(area)) - self.paper_sat
+
+
+
+# ---- "LATIN / PRINTED WORD?" CHECK ----
+# A photo of ordinary (Latin) text - a screen, a printed page - makes
+# whole WORDS come out as one "glyph": several small separate letters side
+# by side in one wide box. A Baybayin letter is one main shape (its kudlit
+# sits above/below it, not beside it), so this never happens with real
+# Baybayin: 0% of the glyphs in our handwriting tests vs 40-55% on a photo
+# of a screen with Latin text.
+LATIN_WORD_MIN_PIECES = 3        # >= 3 pieces side by side ...
+LATIN_WORD_MIN_ASPECT = 1.6      # ... in a box >= 1.6x wider than tall
+# whole photo rejected when this share of the candidates are such words
+PAGE_LATIN_REJECT_FRAC = 0.15
+PAGE_LATIN_MIN_COUNT = 3
+
+
+def looks_like_latin_word(glyph_crop):
+    """True when the glyph is a row of >= 3 separate pieces in a wide box -
+    a written/printed word, not one Baybayin letter."""
+    mask = (glyph_crop > 0).astype(np.uint8)
+    h, w = mask.shape[:2]
+    if h == 0 or w < LATIN_WORD_MIN_ASPECT * h:
+        return False
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    min_area = max(3, 0.01 * float(mask.sum()))
+    pieces = sorted((int(s[0]), int(s[0] + s[2])) for s in stats[1:] if s[4] >= min_area)
+    side_by_side, right = 0, -1
+    for x0, x1 in pieces:
+        if x0 > right:           # starts after everything before it ends
+            side_by_side += 1
+        right = max(right, x1)
+    return side_by_side >= LATIN_WORD_MIN_PIECES
+
+
 def not_a_base_reason(glyph_crop, typical_letter_h, typical_letter_w):
     """Returns why this glyph is not a base letter, or None if it looks like one."""
     ys, xs = np.nonzero(glyph_crop)
@@ -363,6 +496,11 @@ LINE_BAND_RUN_FRAC = 0.3
 LINE_BAND_MERGE_GAP_FRAC = 0.6
 LINE_BAND_MIN_GAP_PX = 5
 LINE_BAND_EXPAND_FRAC = 0.5
+# Two runs separated by a small gap are joined only if one of them is
+# short (a row of kudlit marks, or part of a line). Two full-height runs
+# are two separate lines even when the writer put the lines close
+# together (before, 5 tightly written lines were read as 2).
+LINE_BAND_FULL_LINE_FRAC = 0.6
 
 
 def _row_letter_counts(binary_img):
@@ -416,7 +554,9 @@ def find_line_bands(binary_img, run_frac=LINE_BAND_RUN_FRAC,
     merged = [list(runs[0])]
     for start, end in runs[1:]:
         prev_start, prev_end = merged[-1]
-        if start - prev_end <= merge_gap_threshold:
+        both_full_lines = min(end - start, prev_end - prev_start) >= \
+            LINE_BAND_FULL_LINE_FRAC * median_height
+        if start - prev_end <= merge_gap_threshold and not both_full_lines:
             merged[-1][1] = end
         else:
             merged.append([start, end])
@@ -495,6 +635,40 @@ def split_into_line_masks(binary_img, bands):
     return strips
 
 
+
+# ---- WORD SPACES: don't let ONE very wide gap hide the others ----
+# The word-gap threshold is chosen per line from the gaps themselves. When
+# a line has one unusually wide gap (a word far to the right, a stray mark
+# at the edge) that single gap can decide the threshold, so every normal
+# space on the line is missed and the words get glued together
+# ("Humintuangbasasa"). Big marker letters make this more likely. So when
+# only ONE gap is above the threshold, look once more among the smaller
+# gaps for a clear break that is still a real space for this letter size.
+WORD_GAP_MIN_FRAC = 0.45        # a space is at least 45% of a letter's width
+WORD_GAP_MIN_JUMP_FRAC = 0.15   # the break must be a clear jump ...
+WORD_GAP_RATIO_MEDIAN = 1.35    # ... clearly bigger than the letter gaps
+WORD_GAP_RATIO_MAX = 1.3
+
+
+def refine_word_gap(gaps, row, word_gap):
+    if len(gaps) < 3 or sum(1 for g in gaps if g > word_gap) > 1:
+        return word_gap
+    letter_w = float(np.median([b[2] - b[0] for b in row]))
+    low = sorted(g for g in gaps if g <= word_gap)
+    if len(low) < 2 or letter_w <= 0:
+        return word_gap
+    jumps = [low[i + 1] - low[i] for i in range(len(low) - 1)]
+    k = jumps.index(max(jumps))
+    candidate = (low[k] + low[k + 1]) / 2.0
+    under = low[:k + 1]
+    if (jumps[k] >= WORD_GAP_MIN_JUMP_FRAC * letter_w
+            and candidate >= WORD_GAP_MIN_FRAC * letter_w
+            and low[k + 1] >= WORD_GAP_RATIO_MEDIAN * float(np.median(under))
+            and low[k + 1] >= WORD_GAP_RATIO_MAX * max(under)):
+        return candidate
+    return word_gap
+
+
 def group_line_boxes_into_words(boxes):
     if not boxes:
         return []
@@ -511,6 +685,7 @@ def group_line_boxes_into_words(boxes):
         word_gap = (sorted_gaps[biggest_jump_idx] + sorted_gaps[biggest_jump_idx + 1]) / 2.0
     else:
         word_gap = max(10.0, sorted_gaps[0] * 2.0) if sorted_gaps else 10.0
+    word_gap = refine_word_gap(gaps, row, word_gap)
 
     words = []
     current_word = [row[0]]
@@ -530,8 +705,7 @@ SEGMENT_MERGE_KERNEL = (5, 35)
 
 
 def segment_glyphs(bin_img, pad=0, min_area=40, merge_kernel=SEGMENT_MERGE_KERNEL):
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, merge_kernel)
-    dilated = cv2.dilate(bin_img, kernel, iterations=1)
+    dilated = _dilate_rect(bin_img, merge_kernel)   # NumPy (OpenCV crashed)
     contours, _ = cv2.findContours(
         dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -712,8 +886,7 @@ def estimate_glyph_cluster_kernel(crop_bin):
 
 
 def find_glyph_clusters(binary_img, kernel_size, min_area=GLYPH_REFINE_MIN_AREA):
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
-    dilated = cv2.dilate(binary_img, kernel, iterations=1)
+    dilated = _dilate_rect(binary_img, kernel_size)   # NumPy (OpenCV crashed)
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     boxes = []
@@ -1041,6 +1214,7 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     blur_size = min(101, max(15, (min(image.shape) // 3) | 1))
     background = cv2.GaussianBlur(image, (blur_size, blur_size), 0)
     normalized = cv2.divide(image, background, scale=255)
+    paper_colour = _PaperColour.from_bytes(image_bytes, image_width, image_height)
     binary = preprocess_image(normalized)
 
     skew_angle = estimate_skew_angle(binary)
@@ -1135,6 +1309,7 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     crop_index = 0
     glyph_candidates = 0     # every glyph that reached the checks
     texture_rejects = 0      # ... removed because the background is not paper
+    latin_word_rejects = 0   # ... removed because they are Latin/printed words
     for line, (strip_top, line_mask) in text_lines:
         line_words = []
         line_word_indices = []
@@ -1157,6 +1332,9 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                 for local_box, glyph_crop in single_glyph_crops:
                     glyph_candidates += 1
                     reject_reason = not_a_base_reason(glyph_crop, typical_letter_h, typical_letter_w)
+                    if reject_reason is None and looks_like_latin_word(glyph_crop):
+                        latin_word_rejects += 1
+                        reject_reason = 'a written/printed word (Latin letters), not one Baybayin letter'
                     if reject_reason is None:
                         texture = background_texture_ratio(
                             normalized_rot, binary_all_ink, glyph_crop,
@@ -1167,6 +1345,18 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                             texture_rejects += 1
                             reject_reason = (f'background is a texture/pattern, not paper '
                                              f'(texture ratio {texture:.2f} > {TEXTURE_RATIO_MAX})')
+                    if reject_reason is None and paper_colour is not None:
+                        gx0 = tight_abs_x + local_box[0]
+                        gy0 = tight_abs_y + local_box[1]
+                        gx1 = tight_abs_x + local_box[2]
+                        gy1 = tight_abs_y + local_box[3]
+                        colour_diff = paper_colour.saturation_above_paper(
+                            map_box_to_original(rotation_matrix_inv, gx0, gy0, gx1, gy1),
+                            pad=max(4, int(0.3 * typical_letter_h)),
+                        )
+                        if colour_diff > OFF_PAPER_SAT_DIFF:
+                            reject_reason = (f'not on the paper - the surface around it is '
+                                             f'coloured (+{colour_diff:.0f} saturation vs paper)')
                     if reject_reason is not None:
                         if debug:
                             print(f"  [marker debug] NOT A BASE - removed glyph at "
@@ -1257,6 +1447,12 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
                               / max(1.0, float(np.median(heights))))
     if debug:
         print(f"  [marker debug] page check: letter height spread={height_spread:.2f}")
+    latin_frac = latin_word_rejects / float(max(1, glyph_candidates))
+    if results and latin_word_rejects >= PAGE_LATIN_MIN_COUNT and latin_frac >= PAGE_LATIN_REJECT_FRAC:
+        if debug:
+            print(f"  [marker debug] PAGE REJECTED: {latin_frac:.0%} of the candidates are "
+                  f"Latin/printed words - not Baybayin")
+        results = []
     if results and (texture_frac >= PAGE_TEXTURE_REJECT_FRAC or
                     (texture_frac >= PAGE_TEXTURE_SOFT_FRAC and height_spread > PAGE_HEIGHT_SPREAD_MAX)):
         if debug:

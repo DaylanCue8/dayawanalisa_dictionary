@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../services/app_language.dart';
+import '../services/app_settings.dart';
+import '../widgets/dayaw_style.dart';
 import 'baybayin_to_tagalog_view.dart';
 import 'tagalog_to_baybayin_view.dart';
 import 'settings_screen.dart';
@@ -87,7 +91,8 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
                 });
               },
               itemBuilder: (context, index, selectedness) {
-                final (icon, selectedIcon, label) = _destinations[index];
+                final (icon, selectedIcon, en, fil) = _destinations[index];
+                final label = context.tr(en, fil);
                 final color = Color.lerp(
                   Colors.brown,
                   Colors.black87,
@@ -125,14 +130,21 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
     );
   }
 
-  static const List<(IconData, IconData, String)> _destinations = [
-    (Icons.translate, Icons.translate, 'Filipino to Baybayin'),
+  // (icon, selected icon, English label, Filipino label)
+  static const List<(IconData, IconData, String, String)> _destinations = [
+    (
+      Icons.translate,
+      Icons.translate,
+      'Filipino to Baybayin',
+      'Filipino sa Baybayin',
+    ),
     (
       Icons.document_scanner_outlined,
       Icons.document_scanner,
-      'Baybayin to Filipino',
+      'Baybayin to Latin',
+      'Baybayin sa Latin',
     ),
-    (Icons.settings_outlined, Icons.settings, 'Settings'),
+    (Icons.settings_outlined, Icons.settings, 'Settings', 'Mga Setting'),
   ];
 
   Widget _buildSelectedDestination() {
@@ -147,28 +159,207 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
     }
   }
 
+  static const double _capsuleHeight = 54;
+  static const BorderRadius _capsuleRadius = BorderRadius.all(
+    Radius.circular(_capsuleHeight / 2),
+  );
+  static const EdgeInsets _capsulePadding = EdgeInsets.symmetric(
+    horizontal: 18,
+  );
+
   Widget _buildHeader() {
-    // Capsule that hugs the logo (with even breathing room around it)
-    // instead of stretching across the screen.
-    return Center(
-      child: GlassContainer(
-        borderRadius: const BorderRadius.all(Radius.circular(29)),
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-        child: Image.asset(
-          'assets/images/dayawlogo.png',
-          height: 50,
-          errorBuilder: (ctx, err, stack) {
-            return const Text(
-              "DAYAW",
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 22,
-                color: Colors.brown,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _buildHeaderIconButton(
+                icon: Icons.language,
+                tooltip: context.tr('Language', 'Lengwahe'),
+                onTap: _openLanguagePicker,
               ),
-            );
-          },
+            ),
+          ),
+          GlassContainer(
+            height: _capsuleHeight,
+            borderRadius: _capsuleRadius,
+            padding: _capsulePadding,
+            child: Center(
+              child: Image.asset(
+                'assets/images/dayawlogo.png',
+                height: 42,
+                errorBuilder: (ctx, err, stack) => const Text(
+                  'DAYAW',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 22,
+                    color: Colors.brown,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _buildHeaderIconButton(
+                icon: Icons.palette_outlined,
+                tooltip: context.tr('Theme', 'Tema'),
+                onTap: _openThemePicker,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeaderIconButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: Tooltip(
+        message: tooltip,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: _capsuleRadius,
+          child: SizedBox(
+            width: _capsuleHeight,
+            height: _capsuleHeight,
+            child: Icon(icon, color: DayawColors.deepBrown, size: 24),
+          ),
         ),
       ),
     );
+  }
+
+  Future<void> _openLanguagePicker() async {
+    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    final code = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassContainer(
+            tint: const Color(0xE6FFFBF5),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DayawSectionTitle(
+                  context.tr('Language', 'Lengwahe'),
+                  Icons.language,
+                ),
+                const SizedBox(height: 8),
+                for (final (code, name) in appLanguages)
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    leading: Container(
+                      width: 38,
+                      height: 38,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: DayawColors.deepBrown,
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: Text(
+                        code.toUpperCase(),
+                        style: const TextStyle(
+                          color: DayawColors.gold,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                    title: Text(
+                      name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: DayawColors.deepBrown,
+                      ),
+                    ),
+                    trailing: AppSettings.instance.language == code
+                        ? const Icon(
+                            Icons.check_circle,
+                            color: DayawColors.amber,
+                          )
+                        : null,
+                    onTap: () => Navigator.of(context).pop(code),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (code != null) AppSettings.instance.language = code;
+  }
+
+  Future<void> _openThemePicker() async {
+    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    final theme = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: GlassContainer(
+            tint: const Color(0xE6FFFBF5),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                DayawSectionTitle(
+                  context.tr('Theme', 'Tema'),
+                  Icons.palette_outlined,
+                ),
+                const SizedBox(height: 8),
+                for (final theme in DayawTheme.values)
+                  ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    title: Text(
+                      _themeLabel(context, theme),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: DayawColors.deepBrown,
+                      ),
+                    ),
+                    trailing: AppSettings.instance.theme == theme.name
+                        ? const Icon(
+                            Icons.check_circle,
+                            color: DayawColors.amber,
+                          )
+                        : null,
+                    onTap: () => Navigator.of(context).pop(theme.name),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (theme != null) AppSettings.instance.theme = theme;
+  }
+
+  String _themeLabel(BuildContext context, DayawTheme theme) {
+    switch (theme) {
+      case DayawTheme.gradient:
+        return context.tr('Gradient', 'Gradient');
+      case DayawTheme.bold:
+        return context.tr('Bold', 'Patag');
+      case DayawTheme.embroidery:
+        return context.tr('Embroidery', 'Burda');
+    }
   }
 }

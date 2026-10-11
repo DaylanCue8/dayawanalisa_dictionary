@@ -12,9 +12,10 @@ Files that must sit next to this one (android/app/src/main/python/):
     baybayin_pen_service.py, baybayin_marker_service.py,
     baybayin_disambiguation.py, baybayin_hog.py, offline_svm.py,
     models/model_base.npz, models/model_dia.npz, models/classes.json,
-    Tagalog_words_74419+.csv
+    Tagalog_words.csv
     tagalog_to_baybayin.py   (optional - only for the text mode)
 """
+import gc
 import json
 import os
 import shutil
@@ -24,7 +25,7 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(HERE, 'models')
-WORD_LIST_PATH = os.path.join(HERE, 'Tagalog_words_74419+.csv')
+WORD_LIST_PATH = os.path.join(HERE, 'Tagalog_words.csv')
 
 # The services save each glyph crop under ./temp_crops. On Android the
 # only writable place is the app's own storage, which Chaquopy puts in
@@ -33,6 +34,50 @@ os.chdir(os.environ.get('HOME', HERE))
 
 _lock = threading.Lock()
 _state = {}
+
+# ---- CRASH RECORDER ----
+# A crash inside compiled code (OpenCV/NumPy) kills the app before Python
+# can report anything. faulthandler writes the Python line that was running
+# to crash_trace.txt at that moment; the next scan sends it back to Flutter
+# (field 'previous_crash', printed in the `flutter run` console).
+import faulthandler
+_CRASH_FILE = os.path.join(os.environ.get('HOME', HERE), 'crash_trace.txt')
+_previous_crash = None
+try:
+    if os.path.exists(_CRASH_FILE) and os.path.getsize(_CRASH_FILE) > 0:
+        with open(_CRASH_FILE, encoding='utf-8', errors='replace') as _f:
+            _previous_crash = _f.read()[-4000:]
+        print('[offline] PREVIOUS CRASH:\n' + _previous_crash)
+    _crash_fh = open(_CRASH_FILE, 'w')
+    faulthandler.enable(file=_crash_fh, all_threads=True)
+except Exception as _e:  # never let the recorder itself break the app
+    print(f'[offline] crash recorder not available: {_e}')
+
+# Big photos use a lot of memory on the phone (the pen pipeline makes
+# several full-size copies: denoise, contrast, deskew). Photos larger than
+# this on their longest side are shrunk first. 2400 px still leaves the
+# letters big enough (a page of 5 lines x 20 letters -> letters ~150 px).
+MAX_IMAGE_SIDE = 2400
+
+
+def _limit_image_size(image_bytes):
+    """Shrinks very large photos; returns (bytes, scale). Flutter already
+    fixed the EXIF rotation, so re-encoding (PNG, lossless) is safe."""
+    import numpy as np
+    from baybayin_pen_service import cv2   # the crash-guarded OpenCV
+    data = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if img is None:
+        return image_bytes, 1.0
+    h, w = img.shape[:2]
+    if max(h, w) <= MAX_IMAGE_SIDE:
+        return image_bytes, 1.0
+    scale = MAX_IMAGE_SIDE / float(max(h, w))
+    small = cv2.resize(img, (int(round(w * scale)), int(round(h * scale))),
+                       interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode('.png', small)
+    del img, small, data
+    return (buf.tobytes(), scale) if ok else (image_bytes, 1.0)
 
 
 def _load():
@@ -61,9 +106,12 @@ def _load():
 
 
 def warm_up():
+    """Loads the models. Returns JSON; 'previous_crash' holds the Python
+    stack recorded by faulthandler if the app crashed last time (else null),
+    so the app can show it on screen."""
     with _lock:
         _load()
-    return 'ok'
+    return json.dumps({'ok': True, 'previous_crash': _previous_crash})
 
 
 def _to_json(payload):
@@ -87,8 +135,11 @@ def recognize(image_bytes, input_type='marker', debug=False):
         with _lock:
             state = _load()
             service = state['pen'] if input_type == 'pen' else state['marker']
+            image_bytes, scale = _limit_image_size(bytes(image_bytes))
+            if debug and scale != 1.0:
+                print(f'[offline] photo shrunk to {scale:.2f}x to save memory')
             text, conf, results, image_dims = service.preprocess_and_predict(
-                bytes(image_bytes), session_id,
+                image_bytes, session_id,
                 state['base_model'], state['dia_model'],
                 state['base_classes'], state['dia_classes'],
                 filipino_word_set=state['word_set'], debug=debug,
@@ -116,6 +167,7 @@ def recognize(image_bytes, input_type='marker', debug=False):
             'session_id': session_id,
             'input_type_used': input_type,
             'offline': True,
+            'previous_crash': _previous_crash,
         })
     except Exception as e:
         traceback.print_exc()
@@ -123,6 +175,7 @@ def recognize(image_bytes, input_type='marker', debug=False):
     finally:
         # no archive offline: don't let saved crops fill up the phone
         shutil.rmtree(os.path.join('temp_crops', f'session_{session_id}'), ignore_errors=True)
+        gc.collect()   # give the big temporary images back right away
 
 
 def translate_text(text):

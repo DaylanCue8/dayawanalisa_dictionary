@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/app_settings.dart';
+import 'dayaw_style.dart';
 
 /// iOS "liquid glass" style segmented selector.
 ///
@@ -240,21 +241,23 @@ class _LiquidGlassSelectorState extends State<LiquidGlassSelector>
           child: DecoratedBox(
             decoration: BoxDecoration(
               borderRadius: widget.pillRadius,
-              // BoxDecoration can't take both; the gradient already ends in
-              // the fill color while lifted.
-              color: lift > 0 ? null : fill,
+              // Flat fill; while lifted, the brighter rim shows the pill
+              // is being dragged. The Gradient theme adds a white sheen.
+              color: fill,
               border: Border.all(
                 color: Colors.white.withValues(alpha: 0.25 + 0.55 * lift),
                 width: 1 + lift,
               ),
               gradient: lift > 0
-                  ? LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.white.withValues(alpha: 0.45 * lift),
-                        fill,
-                      ],
+                  ? themedGradient(
+                      LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.white.withValues(alpha: 0.45 * lift),
+                          fill,
+                        ],
+                      ),
                     )
                   : null,
             ),
