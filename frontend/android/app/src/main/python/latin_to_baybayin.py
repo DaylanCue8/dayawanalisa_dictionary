@@ -1425,31 +1425,6 @@ NOISE_CONFIDENCE_THRESHOLD = 0.30   # same as the Baybayin service
 # Without latin_reject.json nothing changes. Any error here only skips
 # the rejection - it can never stop a scan.
 _REJECT_CFG = None
-# DOUBLE CHECK used when there is no latin_reject.json: the model must be
-# at least this sure that a mark is one of its 19 letters. Letters that are
-# NOT in the model (C, F, J, Q, V, X, Z) get unsure answers (C -> e 34-69%,
-# F -> p 34-86%, Z -> l 58%), while real letters are usually 95-100%.
-# Only applied to words that are NOT real Filipino words (Tagalog_words.csv),
-# so mahal, kung, pilipino... are never touched.
-DEFAULT_SURE_LIMIT = 0.90
-# Letters Baybayin cannot write. The 26-class Latin model can READ them,
-# and every letter read as one of these is dropped (no box, no prediction).
-UNSUPPORTED_LETTERS = set('cfjqvxz')
-# The word list has junk short entries ('ee', 'ky', 'pp'...), so a word of 1-2
-# letters only counts as real if it is a common Filipino short word.
-TRUSTED_SHORT_WORDS = {
-    'ay', 'at', 'sa', 'si', 'ni', 'na', 'ng', 'ko', 'mo', 'ka', 'ba', 'po',
-    'di', 'ma', 'pa', 'ha', 'oo', 'o', 'e', 'ga', 'ito', 'yan',
-}
-
-
-def is_trusted_word(word, word_set):
-    """A real Filipino word that the double check must never touch."""
-    if not word_set or not word:
-        return False
-    if len(word) <= 2:
-        return word in TRUSTED_SHORT_WORDS
-    return word in word_set
 PAGE_REJECT_FRACTION = 0.5     # this share of letters rejected -> no Latin on the photo
 UNKNOWN_MARK = '?'
 # What happens to a rejected letter:
@@ -1860,16 +1835,11 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
 
             # ---- error handling: letters the model never learned -> '?' ----
             # (a real Filipino word is trusted as it is and never rejected)
-            is_real = is_trusted_word(latin_word, word_set)
+            is_real = bool(word_set) and latin_word in word_set and len(latin_word) > 1
             rejected = [False] * len(letter_dets)
             if not is_real and len(latin_word) == len(letter_dets):
                 rejected = reject_unknown_letters(
                     letter_glyphs, [c[0][1] for c in cands_per_letter], latin_model)
-            # 26-class model: a letter READ as c f j q v x z is not in Baybayin
-            # -> always dropped (with the 19-class model this never happens)
-            if len(latin_word) == len(letter_dets):
-                rejected = [r or ch in UNSUPPORTED_LETTERS
-                            for r, ch in zip(rejected, latin_word)]
             letters_total += len(letter_dets)
             if any(rejected) and REJECT_MODE == 'drop':
                 # unknown letters are removed: no prediction, no box
@@ -1987,7 +1957,7 @@ def warm_up_latin(word_set=None):
     """Loads model_latin.npz + latin_classes.json from this folder (or the
     .pkl files when testing on a PC), and the Filipino word list (given, or
     borrowed from baybayin_offline)."""
-    global _WORD_SET, _REJECT_CFG
+    global _WORD_SET
     if _LATIN_MODEL is None:
         # the app keeps its models in python/models/ (next to model_base.npz);
         # the python/ folder itself is also checked
@@ -2005,8 +1975,6 @@ def warm_up_latin(word_set=None):
             if os.path.exists(cfg):
                 load_reject_config(cfg)
                 break
-        if _REJECT_CFG is None:          # no json: use the built-in double check
-            _REJECT_CFG = {'score': 'prob', 'threshold': DEFAULT_SURE_LIMIT}
     if word_set is not None:
         _WORD_SET = {str(w).lower() for w in word_set}
     elif _WORD_SET is None:
