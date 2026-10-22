@@ -343,6 +343,10 @@ TEXTURE_RATIO_MAX = 0.06
 # whole photo rejected when at least this share of the glyph candidates
 # sit on a textured background (see the page check in preprocess_and_predict)
 PAGE_TEXTURE_REJECT_FRAC = 0.35
+# whole photo rejected when fewer than half of the glyph candidates are
+# kept as letters (a photo of a room, furniture or a screen)
+PAGE_KEEP_MIN_FRAC = 0.5
+PAGE_KEEP_MIN_CANDIDATES = 8
 # ... or when a smaller share (>= 20%) is on texture AND the "letters" that
 # are left have very uneven heights (door/chair/furniture edges). Real
 # writing: texture share <= 9% and height spread <= 0.46 in our tests.
@@ -1548,6 +1552,17 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
         if debug:
             print(f"  [pen debug] PAGE REJECTED: {texture_frac:.0%} of the candidates are on a "
                   f"textured background, height spread {height_spread:.2f} - not handwriting on paper")
+        results = []
+
+    # Most candidates were thrown out as non-letters (lines, specks,
+    # blobs, texture)? Then the photo is not handwriting on paper - e.g. a
+    # room, furniture or a screen - and the few pieces that survived are
+    # noise too. Real handwriting keeps over 80% of its candidates.
+    if (results and glyph_candidates >= PAGE_KEEP_MIN_CANDIDATES and
+            len(results) < PAGE_KEEP_MIN_FRAC * glyph_candidates):
+        if debug:
+            print(f"  [pen debug] PAGE REJECTED: only {len(results)} of {glyph_candidates} "
+                  f"candidates look like letters - not handwriting")
         results = []
 
     if not results:

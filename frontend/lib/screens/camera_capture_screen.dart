@@ -106,6 +106,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   // judged "sharp enough" here should also pass the backend's check.
   static const double _blurVarianceThreshold = 60.0;
 
+  // ---- Darkness detection ----
+  // Average brightness (0 = black, 255 = white) below which the photo is
+  // treated as too dark (covered lens, lights off) instead of blurry.
+  // A dark photo also has almost no edges, so without this check it
+  // would wrongly get the "blurry" message.
+  static const double _minBrightness = 40.0;
+
   // ---- Stability-based auto-capture ----
   // Shaky hands are the single biggest cause of a blurry document
   // photo, and asking the user to press a physical/on-screen button
@@ -131,7 +138,9 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   static const Duration _requiredHoldDuration = Duration(milliseconds: 700);
   DateTime? _stableSince;
   double _stabilityPercent = 0.0;
-  bool _autoCaptureEnabled = true;
+  // OFF when the camera opens: the user taps "Auto-detect" to turn it
+  // on, so nothing is captured before they are ready.
+  bool _autoCaptureEnabled = false;
   bool _autoCaptureFired = false;
   // Starting values come from Settings.
   String _cameraInputType = AppSettings.instance.cameraInputType;
@@ -204,16 +213,56 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
           _flashSupported = false;
         }
         if (mounted) setState(() {});
+      }).catchError((Object e) {
+        // Permission denied (or the camera failed to open) - the error
+        // happens inside initialize(), so it must be caught here.
+        _handleCameraError(e);
       });
       setState(() {});
     } catch (e) {
+      _handleCameraError(e);
+    }
+  }
+
+  // Set once we start leaving the screen, so the error is handled once.
+  bool _leaving = false;
+
+  /// Camera permission denied -> close the camera screen and go back to
+  /// the Baybayin-to-Latin screen with a message (instead of staying on
+  /// a black preview). Any other camera error -> show the error text.
+  void _handleCameraError(Object e) {
+    if (!mounted || _leaving) return;
+    final denied =
+        e is CameraException &&
+        (e.code == 'CameraAccessDenied' ||
+            e.code == 'CameraAccessDeniedWithoutPrompt' ||
+            e.code == 'CameraAccessRestricted');
+    if (!denied) {
       setState(
         () => _error = tr(
           'Failed to start camera: $e',
           'Hindi mabuksan ang kamera: $e',
         ),
       );
+      return;
     }
+    _leaving = true;
+    final messenger = ScaffoldMessenger.of(context);
+    // Returns null, so the Baybayin-to-Latin screen processes nothing.
+    Navigator.of(context).pop();
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            tr(
+              'Camera permission is needed to scan Baybayin. You can allow it in your phone Settings.',
+              'Kailangan ang pahintulot sa kamera para mag-scan ng Baybayin. Maaari mo itong payagan sa Settings ng iyong phone.',
+            ),
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
   }
 
   /// Cycles to the next flash mode and applies it to the camera.
@@ -687,6 +736,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     if (!mounted) return;
     setState(() => _stabilityPercent = percent);
 
+    // A pop-up (blurry / too dark / page limit / discard dialog) is open
+    // on top of the camera: never auto-capture behind it. The hold timer
+    // is reset too, so after the pop-up closes the phone must be held
+    // steady again for the full hold time before anything is captured.
+    final cameraOnTop = ModalRoute.of(context)?.isCurrent ?? true;
+    if (!cameraOnTop) {
+      _stableSince = null;
+      return;
+    }
+
     final now = DateTime.now();
     if (percent >= _autoCaptureThreshold) {
       _stableSince ??= now;
@@ -770,6 +829,46 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     return (sumSq / count) - (mean * mean);
   }
 
+  /// Average brightness of the photo (0 = black, 255 = white), computed
+  /// on a small grayscale copy for speed.
+  double _computeBrightness(img.Image image) {
+    final small = img.grayscale(img.copyResize(image, width: 200));
+    double sum = 0.0;
+    for (int y = 0; y < small.height; y++) {
+      for (int x = 0; x < small.width; x++) {
+        sum += small.getPixel(x, y).r.toDouble();
+      }
+    }
+    final count = small.width * small.height;
+    return count == 0 ? 0.0 : sum / count;
+  }
+
+  Future<void> _showTooDarkRetakeDialog() async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(context.tr('Photo is too dark', 'Masyadong madilim ang larawan')),
+        content: Text(
+          context.tr(
+            'This photo is too dark to read. Make sure the lens is not '
+                'covered, move to a brighter place or turn on the flashlight, '
+                'and try again.',
+            'Masyadong madilim ang larawang ito para mabasa. Siguraduhing '
+                'hindi natatakpan ang lente, lumipat sa mas maliwanag na lugar '
+                'o buksan ang flashlight, at subukan muli.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(context.tr('Retake', 'Kunan muli')),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showBlurryRetakeDialog(double score) async {
     if (!mounted) return;
     await showDialog(
@@ -847,6 +946,20 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         width: cropWidth,
         height: cropHeight,
       );
+
+      // Too dark (covered lens, no light) is checked BEFORE blur, so a
+      // black photo gets the right message instead of "too blurry".
+      if (_computeBrightness(cropped) < _minBrightness) {
+        if (mounted) {
+          setState(() {
+            _isCapturing = false;
+            _autoCaptureFired = false;
+            _stableSince = null;
+          });
+          await _showTooDarkRetakeDialog();
+        }
+        return; // stay on the camera screen - do NOT pop
+      }
 
       final blurScore = _computeBlurScore(cropped);
       if (blurScore < _blurVarianceThreshold) {
@@ -990,6 +1103,13 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                 return const Center(
                   child: CircularProgressIndicator(color: Colors.white),
                 );
+              }
+              // Camera failed to start (e.g. permission denied): the
+              // screen is closing, so never show a black preview.
+              if (snapshot.hasError ||
+                  _leaving ||
+                  !controller.value.isInitialized) {
+                return const SizedBox();
               }
               return LayoutBuilder(
                 builder: (context, constraints) {

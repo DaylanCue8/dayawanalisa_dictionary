@@ -871,8 +871,13 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           child: Image.memory(
             _webImage!,
             fit: BoxFit.contain,
+            // Only cacheWidth: giving BOTH cacheWidth and cacheHeight
+            // resizes the decoded photo to exactly 1600 x 1600 (or clamps
+            // each side separately), which squashes it on phones whose
+            // photos are bigger than 1600 px. The boxes are drawn with the
+            // photo's TRUE size, so they no longer lined up. With only the
+            // width set, the aspect ratio is kept and the boxes match.
             cacheWidth: 1600,
-            cacheHeight: 1600,
           ),
         ),
         // Drawn on top of the image, sized to the same box, so the

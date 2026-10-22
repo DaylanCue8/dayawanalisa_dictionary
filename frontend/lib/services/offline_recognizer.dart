@@ -13,11 +13,14 @@ import 'package:path_provider/path_provider.dart';
 ///   2. to <app files>/eval/ together with a .txt of what the app read and
 ///      a running eval_log.csv
 /// Set to false before releasing the app so users' photos are never kept.
-const bool kSaveEvalCopies = false;
+const bool kSaveEvalCopies = true;
 
-/// Talks to the offline (on-phone) Baybayin recognizer that runs in
-/// Python through Chaquopy - see MainActivity.kt. Returns the same map the
-/// Flask API used to return, so the rest of the app doesn't change.
+/// Talks to the offline (on-phone) recognizers that run in Python through
+/// Chaquopy - see MainActivity.kt:
+///   recognize()       handwritten Baybayin -> Latin text
+///   recognizeLatin()  handwritten Latin    -> Baybayin text
+/// recognize() returns the same map the Flask API used to return, so the
+/// rest of the app doesn't change.
 ///
 /// Error handling contract: these methods never throw. Every failure
 /// (empty input, channel/plugin error, Python crash, timeout, null or
@@ -83,11 +86,46 @@ class OfflineRecognizer {
   }
 
   // ---------------------------------------------------------------------
+  // LATIN -> BAYBAYIN (needs the 'recognizeLatin' case in MainActivity.kt,
+  // which calls latin_to_baybayin.recognize_latin_json in Python)
+  // ---------------------------------------------------------------------
+
+  /// Reads handwritten Latin letters in [imageBytes] and converts them to
+  /// Baybayin. Same contract as [recognize]: never throws, returns null on
+  /// any failure.
+  ///
+  /// Reply keys: status ('ok' | 'blurry' | 'no_text'), message,
+  /// translated_text / baybayin_text, latin_text, confidence,
+  /// detections (one per letter: char, confidence, bbox, word_id,
+  /// processed_image), words (word_id, latin, baybayin, syllables, bbox),
+  /// image_width, image_height.
+  static Future<Map<String, dynamic>?> recognizeLatin(
+    Uint8List imageBytes,
+  ) async {
+    if (imageBytes.isEmpty) {
+      debugPrint('[OFFLINE] recognizeLatin skipped: empty image');
+      return null;
+    }
+    Map<String, dynamic>? data;
+    try {
+      final json = await channel
+          .invokeMethod<String>('recognizeLatin', {'image': imageBytes})
+          .timeout(timeout);
+      data = _decode(json, 'recognizeLatin');
+    } catch (e) {
+      debugPrint('[OFFLINE] recognizeLatin failed: $e');
+      data = null;
+    }
+    unawaited(_saveEvalCopy(imageBytes, 'latin', data));
+    return data;
+  }
+
+  // ---------------------------------------------------------------------
   // Objective 3: keep a copy of every cropped image
   // ---------------------------------------------------------------------
 
   /// Saves the exact bytes given to the recognizer (the cropped image).
-  /// File name: DAYAW_<yyyyMMdd_HHmmss>_<pen|marker>.jpg
+  /// File name: DAYAW_<yyyyMMdd_HHmmss>_<pen|marker|latin>.jpg
   static Future<void> _saveEvalCopy(
     Uint8List imageBytes,
     String inputType,
@@ -173,7 +211,9 @@ class OfflineRecognizer {
     }
   }
 
-  /// Tagalog -> Baybayin text mode (needs tagalog_to_baybayin.py on the phone).
+  /// OLD typed Filipino-to-Baybayin mode (needs tagalog_to_baybayin.py).
+  /// Removed from the study - delete this method together with the old
+  /// Filipino-to-Baybayin screen once nothing calls it anymore.
   static Future<Map<String, dynamic>?> translateText(String text) async {
     try {
       final json = await channel

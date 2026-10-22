@@ -4,7 +4,7 @@ import '../services/app_language.dart';
 import '../services/app_settings.dart';
 import '../widgets/dayaw_style.dart';
 import 'baybayin_to_tagalog_view.dart';
-import 'tagalog_to_baybayin_view.dart';
+import 'latin_to_baybayin_view.dart';
 import 'settings_screen.dart';
 import '../widgets/glass.dart';
 import '../widgets/liquid_glass_selector.dart';
@@ -135,8 +135,8 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
     (
       Icons.translate,
       Icons.translate,
-      'Filipino to Baybayin',
-      'Filipino sa Baybayin',
+      'Latin to Baybayin',
+      'Latin sa Baybayin',
     ),
     (
       Icons.document_scanner_outlined,
@@ -150,7 +150,7 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
   Widget _buildSelectedDestination() {
     switch (selectedDestination) {
       case 0:
-        return const TagalogToBaybayinView();
+        return const LatinToBaybayinView();
       case 2:
         return const SettingsScreen();
       case 1:
