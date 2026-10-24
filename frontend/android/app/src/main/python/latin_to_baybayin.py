@@ -504,7 +504,7 @@ LATIN_MERGE_MAX_WIDTH = 3
 
 # A box much taller than the letters on its line is not a letter (the edge
 # of the paper, a shadow line, a fold) - it is dropped.
-TOO_TALL_FACTOR = 2.0
+TOO_TALL_FACTOR = 3.0   # x median height: taller = paper edge / shadow (a capital letter in a line of small letters can be ~2.3x)
 
 
 def drop_too_tall_boxes(boxes, factor=TOO_TALL_FACTOR):
@@ -524,6 +524,7 @@ def drop_too_tall_boxes(boxes, factor=TOO_TALL_FACTOR):
 DOT_MAX_HEIGHT_FRAC = 0.45    # x median mark height: smaller marks may be dots
 DOT_SIDE_REACH = 0.25         # x median height: a dot may sit this far left/right of its stem
 DOT_MAX_GAP = 0.8             # x median height: largest gap between a dot and its stem
+DOT_OWNER_MAX_WIDTH = 0.6    # x median mark height: only a narrow stem (i, j) can own a dot
 SEG_MIN_AREA = 10             # pixels: smaller marks are noise
 
 
@@ -551,6 +552,8 @@ def segment_latin_glyphs(bin_img, min_area=SEG_MIN_AREA):
             gap = b[1] - d[3]
             if overlap <= 0 or not below or gap > DOT_MAX_GAP * med:
                 continue
+            if (b[2] - b[0]) > DOT_OWNER_MAX_WIDTH * med:
+                continue          # only i and j have dots: a wide letter (Q) never takes one
             # most real overlap first (no reach), then the nearest
             real = min(d[2], b[2]) - max(d[0], b[0])
             score = (real, -abs((b[0] + b[2]) - (d[0] + d[2])))
@@ -577,6 +580,45 @@ def segment_latin_glyphs(bin_img, min_area=SEG_MIN_AREA):
 # trained on stays exactly the same (no retraining needed).
 # Every size is measured against YOUR writing: L = typical letter height,
 # t = pen stroke thickness - so it works for small and big handwriting.
+# Two real pieces stacked in the same column are ONE letter: Latin letters
+# never sit on top of each other in a line. A Z whose top bar broke off at
+# the corner (pen lifted) came out as 'r' (the bar) + 't' (the rest).
+# Dots are handled in segment_latin_glyphs; tiny specks are left alone here.
+STACK_MIN_OVERLAP = 0.5      # x-overlap / narrower width
+STACK_MIN_SIZE = 0.35        # x median height: both pieces at least this long on one side
+STACK_MAX_GAP = 0.3          # x median height: vertical gap between them
+
+
+def merge_stacked_boxes(boxes):
+    """Joins boxes that sit on top of each other in the same column."""
+    if len(boxes) < 2:
+        return list(boxes)
+    mh = float(np.median([b[3] - b[1] for b in boxes]))
+    if mh <= 0:
+        return list(boxes)
+    big = lambda b: max(b[2] - b[0], b[3] - b[1]) >= STACK_MIN_SIZE * mh
+    out = sorted(boxes, key=lambda b: b[0])
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                if not (big(a) and big(b)):
+                    continue
+                ov = min(a[2], b[2]) - max(a[0], b[0])
+                narrow = min(a[2] - a[0], b[2] - b[0])
+                vgap = max(a[1], b[1]) - min(a[3], b[3])
+                if narrow > 0 and ov >= STACK_MIN_OVERLAP * narrow and vgap <= STACK_MAX_GAP * mh:
+                    out[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                    del out[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return sorted(out, key=lambda b: b[0])
+
+
 NOISE_MIN_PIECES_FOR_STATS = 3      # need at least 3 letter-sized pieces to judge
 NOISE_SMALL_FRAC = 0.35             # piece < 35% of L (both sides) = "small"
 NOISE_KUDLIT_REACH_FRAC = 0.6       # small piece within 0.6 L above/below a letter = kudlit, keep
@@ -858,12 +900,15 @@ def _tight(mask):
                                                                int(xs.max()) + 1, int(ys.max()) + 1)
 
 
-def candidate_cuts(glyph, median_h, max_cuts=RECOG_MAX_CUTS):
+def candidate_cuts(glyph, median_h, max_cuts=RECOG_MAX_CUTS, thin_only=False):
     """Possible cut columns inside the box, best first:
       1. columns where the ink is thin (two letters joined by a thin stroke)
       2. other local minima of the ink profile (letters pressed together)
       3. if still nothing, evenly spaced columns about one letter apart
-    The SVM later decides which of these cuts are real."""
+    The SVM later decides which of these cuts are real.
+    thin_only=True keeps only cuts through ONE thin joining stroke: used for
+    boxes of normal letter width, which are usually ONE letter. A cut through
+    2-3 strokes there splits a single letter (Z -> 'i' + 'l', a -> 'o' + 'i')."""
     w = glyph.shape[1]
     col = (glyph > 0).sum(axis=0).astype(np.float64)
     if w < 5:
@@ -876,20 +921,20 @@ def candidate_cuts(glyph, median_h, max_cuts=RECOG_MAX_CUTS):
     minima = [x for x in range(min_gap, w - min_gap)
               if smooth[x] <= smooth[x - 1] and smooth[x] <= smooth[x + 1]]
     thin = sorted((col[x], x) for x in minima if col[x] <= limit)
-    other = sorted((smooth[x], x) for x in minima if col[x] > limit)
+    other = [] if thin_only else sorted((smooth[x], x) for x in minima if col[x] > limit)
     chosen = []
     for _, x in thin + other:
         if all(abs(x - c) >= min_gap for c in chosen):
             chosen.append(x)
         if len(chosen) >= max_cuts:
             break
-    if not chosen and w > RECOG_PIECE_MAX_WIDTH * median_h:
+    if not chosen and not thin_only and w > RECOG_PIECE_MAX_WIDTH * median_h:
         step = max(min_gap, int(0.6 * median_h))
         chosen = list(range(step, w - min_gap, step))[:max_cuts]
     return sorted(chosen)
 
 
-def split_by_recognition(glyph, median_h, model, classes, force_split=False):
+def split_by_recognition(glyph, median_h, model, classes, force_split=False, thin_only=False):
     """glyph: binary crop of ONE box. Returns a list of (x0, x1) column
     ranges (box coords), the best way to cut it into letters.
 
@@ -899,7 +944,7 @@ def split_by_recognition(glyph, median_h, model, classes, force_split=False):
     and 'i' pressed together), the best 2+ piece reading is also tried and
     used if its pieces are, on average, more confident than the whole."""
     w = glyph.shape[1]
-    cuts = [0] + candidate_cuts(glyph, median_h) + [w]
+    cuts = [0] + candidate_cuts(glyph, median_h, thin_only=thin_only) + [w]
     if len(cuts) == 2:
         return [(0, w)]
     min_w = RECOG_PIECE_MIN_WIDTH * median_h
@@ -1094,8 +1139,26 @@ def merge_by_recognition(mask, boxes, median_h, model, classes):
 # keeping whole by a margin, so clear letters are never changed).
 SPLIT_MIN_WIDTH = 0.85        # x median height: narrower boxes are never split
 SPLIT_MARGIN = 0.15           # like MERGE_MARGIN, for splitting one box into letters
-SPLIT_ONLY_BELOW = 0.90       # a normal-width letter read at least this sure is not cut (speed)
+SPLIT_ONLY_BELOW = 0.90       # a lone letter read at least this sure is never cut into a word
+# A letter of NORMAL width is only tried as two letters when the model is
+# really unsure of it (below 60%, the same rule as split_by_recognition).
+# Before, anything under 90% was tried, so an 'a' read 75% was cut into its
+# bowl and its stem -> 'o' + 'i' ("mahal" -> "moihal"); 'd' -> 'o' + 'l' too.
+# Touching letters make WIDE boxes, and those are still always tried.
+SPLIT_NORMAL_BELOW = RECOG_KEEP_CONFIDENCE
+# Joining boxes back into one letter (a pen stroke that broke): only when the
+# pieces touch (gap <= 4% of letter height) or one piece is at most 60% as
+# tall as the other. 'l' and 'i' with a space between were joined into 'k'.
+JOIN_TOUCH_GAP = 0.04
+JOIN_SHORT_FRAC = 0.60
 MAX_READINGS = 256            # most cuttings tried per word
+# A letter the reader never learned (Z, C, ...) is read UNSURELY as a whole,
+# so cutting it into 'i' + 'l' pieces looked better ("Zz" -> "ilil").
+# The 26-class model is asked about every WHOLE box first: if it thinks the
+# box is probably c f j q v x z, the box is never cut, and broken pieces that
+# together form such a letter are joined back. The final drop still uses the
+# measured limit (latin_veto.json).
+VETO_KEEP_WHOLE = 0.50
 
 
 def _box_union(bs):
@@ -1121,14 +1184,31 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
     whole_cands = dict(zip(whole_list, classify_latin_batch(
         [mask[b[1]:b[3], b[0]:b[2]] for b in whole_list], model, classes))) if whole_list else {}
 
+    whole_unsup = {}
+    if whole_list and _VETO:
+        pv = veto_probs([mask[b[1]:b[3], b[0]:b[2]] for b in whole_list])
+        if pv:
+            whole_unsup = dict(zip(whole_list, pv))
+
     def worth_splitting(b):
+        if whole_unsup.get(b, 0.0) >= VETO_KEEP_WHOLE:
+            return False                          # probably Z / C / ...: never cut it
         w = b[2] - b[0]
         if w < SPLIT_MIN_WIDTH * median_h:
             return False                          # too narrow for 2 letters
         if w >= RECOG_SPLIT_MIN_WIDTH * median_h:
             return True                           # wide: may hold 2 touching letters
         c = whole_cands.get(b)
-        return c is None or c[0][1] < SPLIT_ONLY_BELOW   # normal width: only if unsure
+        return c is None or c[0][1] < SPLIT_NORMAL_BELOW  # normal width: only if really unsure
+
+    def can_join(a, b):
+        """Two pieces of ONE broken letter: they touch/overlap, or one of
+        them is much shorter (a broken-off bar or arm). Two full-height
+        strokes with a visible space between them are two letters ('l' 'i'),
+        even if together they look like another letter ('k')."""
+        gap = b[0] - a[2]
+        ha, hb = a[3] - a[1], b[3] - b[1]
+        return gap <= JOIN_TOUCH_GAP * median_h or min(ha, hb) <= JOIN_SHORT_FRAC * max(ha, hb)
 
     # ---- 1. every possible piece of the word (an "edge" from box i to box j) ----
     edges = {}           # i -> list of (j, [box,...], penalty)
@@ -1137,7 +1217,9 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
         edges.setdefault(i, []).append((i + 1, [b], 0.0))                  # keep whole
         if worth_splitting(b):                                            # split
             glyph = mask[b[1]:b[3], b[0]:b[2]]
-            ranges = split_by_recognition(glyph, median_h, model, classes, force_split=True)
+            normal_width = (b[2] - b[0]) < RECOG_SPLIT_MIN_WIDTH * median_h
+            ranges = split_by_recognition(glyph, median_h, model, classes, force_split=True,
+                                          thin_only=normal_width)
             if len(ranges) > 1:
                 parts = []
                 for a, c in ranges:
@@ -1152,6 +1234,8 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
             u = _box_union(boxes[i:j])
             if max(gaps) > max_gap or (u[2] - u[0]) > max_w:
                 break
+            if not all(can_join(boxes[k], boxes[k + 1]) for k in range(i, j - 1)):
+                break
             edges[i].append((j, [u], MERGE_MARGIN))
 
     # ---- 2. classify every distinct piece in ONE SVM call ----
@@ -1165,6 +1249,23 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
         cands.update(zip([all_boxes[k] for k in keep],
                          classify_latin_batch([crops[k] for k in keep], model, classes)))
 
+    # joined boxes (broken pieces put back together) are also asked
+    unsup = dict(whole_unsup)
+    if _VETO:
+        joined = sorted({bxs[0] for lst in edges.values() for j, bxs, pen in lst
+                         if pen == MERGE_MARGIN and len(bxs) == 1 and bxs[0] in cands})
+        if joined:
+            pv = veto_probs([mask[bx[1]:bx[3], bx[0]:bx[2]] for bx in joined])
+            if pv:
+                unsup.update(zip(joined, pv))
+
+    def box_score(bx):
+        p = cands[bx][0][1]
+        u = unsup.get(bx, 0.0)
+        if u >= VETO_KEEP_WHOLE:
+            p = max(p, u)                         # a sure Z / C counts as a sure mark
+        return float(np.log(max(p, 1e-6)))
+
     # ---- 3. every reading (path through the word), best first ----
     readings = []
 
@@ -1177,7 +1278,7 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
         for j, bxs, penalty in edges.get(i, []):
             if any(bx not in cands for bx in bxs):
                 continue
-            add = sum(float(np.log(max(cands[bx][0][1], 1e-6))) for bx in bxs) - penalty
+            add = sum(box_score(bx) for bx in bxs) - penalty
             walk(j, pieces + [(bx, cands[bx]) for bx in bxs], score + add)
 
     walk(0, [], 0.0)
@@ -1186,8 +1287,14 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
     readings.sort(key=lambda r: r[0], reverse=True)
 
     # ---- 4. the dictionary picks the first reading that is a real word ----
+    # A word that is ONE letter box the SVM reads confidently (an 'M' standing
+    # alone) is never cut into a different short word ('M' -> 'N' + '\\' = "ni").
+    one_sure_box = (n == 1 and boxes[0] in whole_cands
+                    and whole_cands[boxes[0]][0][1] >= SPLIT_ONLY_BELOW)
     if word_set:
         for score, pieces in readings:
+            if one_sure_box and len(pieces) > 1:
+                continue
             word, status = resolve_word([c for _, c in pieces], word_set)
             if (status in ('model', 'dictionary') and word in word_set
                     and (len(word) > 1 or word == 'o')):
@@ -1198,12 +1305,157 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
     return best, word, status
 
 
+# ---- Line position check (after the model, no dictionary) ----
+# Each letter is cropped and resized to 56x56 ALONE, so the model never sees
+# how tall the letter is or whether it goes below the line. Two confusions
+# come from that, and the photo itself can settle them:
+#   g -> a : a 'g' goes below the line; a bowl+stem that stays ON the line
+#            is an 'a' (only when 'a' is one of the model's top 3 letters)
+#   i <-> l: a dot means 'i'; no dot and as tall as h/k/l means 'l';
+#            no dot and short means 'i'
+# The first letter of a word is never changed from 'i' to 'l', because a
+# capital I (Ina, Isa, Ilog) is tall with no dot.
+# A letter is only changed when the photo clearly disagrees with the model.
+USE_LINE_POSITION = True
+X_HEIGHT_LETTERS = set('acemnorsuw')   # letters with no part above or below the line
+POS_MIN_X_LETTERS = 2                  # need this many to know the line's size
+POS_BELOW_LINE_FRAC = 0.35             # x letter height below the line = descender (a real g's tail: 0.6-0.9)
+POS_TALL_FRAC = 1.35                   # x letter height: taller = l (no dot)
+POS_SHORT_FRAC = 1.15                  # x letter height: shorter = i (no dot)
+POS_A_MAX_FRAC = 1.45                  # an 'a' (its stem may rise a little) is at most this x letter height;
+                                       # a real 'g' with its tail is ~1.8
+POS_A_MAX_FRAC_FIRST = 1.20            # first letter of a word: stricter (a capital G is ~1.5)
+POS_A_TALL_SHARE = 0.95                # ... and shorter than the line's h/k/l (a capital G is as tall)
+POS_FIT_OUTLIER_FRAC = 0.35            # x letter height: bottoms this far off the fitted line are ignored
+# The height and line rules only make sense when the line has small AND tall
+# letters. Written ALL IN CAPITALS, every letter is the same height: then only
+# the dot rule is used (otherwise a capital L would look 'short' -> 'i').
+TALL_LETTERS = set('bdhklt')
+POS_MIXED_MIN_RATIO = 1.25             # tall letters must be this much taller than small ones
+DESCENDER_LETTERS = set('gpy')
+POS_DESCENDER_SEEN_FRAC = 0.40         # x letter height below the line = a real tail
+
+
+def has_dot(glyph):
+    """True when a small separate mark sits above the main stroke (i, j)."""
+    g = (glyph > 0).astype(np.uint8)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(g, connectivity=8)
+    if n < 3:                                   # background + 1 mark = no dot
+        return False
+    comps = sorted(stats[1:], key=lambda st: st[cv2.CC_STAT_AREA], reverse=True)
+    main = comps[0]
+    main_top = main[cv2.CC_STAT_TOP]
+    for st in comps[1:]:
+        bottom = st[cv2.CC_STAT_TOP] + st[cv2.CC_STAT_HEIGHT]
+        if bottom <= main_top + 1 and st[cv2.CC_STAT_AREA] < main[cv2.CC_STAT_AREA]:
+            return True
+    return False
+
+
+def _put_first(cands, ch):
+    """Same candidates with `ch` first; it takes the box's confidence."""
+    top_p = cands[0][1]
+    rest = [(c, p) for c, p in cands if c != ch]
+    return [(ch, top_p)] + rest
+
+
+def fix_by_position(glyph, box, cands, baseline, x_height, first_in_word=False,
+                    mixed_case=True, a_max=None):
+    """Returns cands (unchanged object if nothing changes).
+    mixed_case=False (a line written in capitals): only the dot rule is used."""
+    top = cands[0][0]
+    h = box[3] - box[1]
+    # a real 'g' always has a tail below the line: a 'g' that stays on the
+    # line and is only as tall as a/n/o is an 'a' (the bowl + stem of a
+    # single-storey 'a' looks like 'g' once it is cut out of the line)
+    if top == 'g':
+        limit = POS_A_MAX_FRAC if a_max is None else a_max
+        if first_in_word:
+            limit = min(limit, POS_A_MAX_FRAC_FIRST)
+        if (mixed_case and h <= limit * x_height
+                and box[3] <= baseline + POS_BELOW_LINE_FRAC * x_height):
+            return _put_first(cands, 'a')
+        return cands
+    if top in ('i', 'l'):
+        dot = has_dot(glyph)
+        if top == 'l' and (dot or (mixed_case and h <= POS_SHORT_FRAC * x_height)):
+            return _put_first(cands, 'i')
+        if (top == 'i' and mixed_case and not dot and not first_in_word
+                and h >= POS_TALL_FRAC * x_height):
+            return _put_first(cands, 'l')
+    return cands
+
+
+def _fit_baseline(xl, x_height):
+    """Baseline y at any x: a straight line through the bottoms of the small
+    letters (a, n, o, ...), refitted without the ones far off it. Falls back to
+    one flat line when there are too few letters."""
+    xs = np.array([(b[0] + b[2]) / 2 for b in xl], float)
+    ys = np.array([b[3] for b in xl], float)
+    flat = float(np.median(ys))
+    if len(xl) < 3 or np.ptp(xs) <= 0:
+        return lambda x: flat
+    a, c = np.polyfit(xs, ys, 1)
+    keep = np.abs(ys - (a * xs + c)) <= POS_FIT_OUTLIER_FRAC * x_height
+    if keep.sum() >= 3 and np.ptp(xs[keep]) > 0:
+        a, c = np.polyfit(xs[keep], ys[keep], 1)
+    return lambda x: float(a * x + c)
+
+
+def apply_line_position(mask, words_read, word_set=None):
+    """words_read: [(word_boxes, (pieces, word, status)), ...] for ONE line."""
+    pieces_all = [pc for _, (pcs, _, _) in words_read for pc in pcs]
+    xl = [b for b, c in pieces_all if c and c[0][0] in X_HEIGHT_LETTERS]
+    if len(xl) < POS_MIN_X_LETTERS:
+        return words_read
+    x_height = float(np.median([b[3] - b[1] for b in xl]))
+    if x_height <= 0:
+        return words_read
+    base_at = _fit_baseline(xl, x_height)      # handwriting lines slope: follow them
+    baseline = base_at(float(np.median([(b[0] + b[2]) / 2 for b in xl])))
+    tall = [b[3] - b[1] for b, c in pieces_all if c and c[0][0] in TALL_LETTERS]
+    mixed_case = bool(tall) and float(np.median(tall)) >= POS_MIXED_MIN_RATIO * x_height
+    if not mixed_case:
+        # no tall letters (e.g. 'ang mga'): a g/p/y that clearly goes below
+        # the line also shows the line is in small letters
+        mixed_case = any(c and c[0][0] in DESCENDER_LETTERS
+                         and b[3] >= base_at((b[0] + b[2]) / 2) + POS_DESCENDER_SEEN_FRAC * x_height
+                         for b, c in pieces_all)
+    a_max = POS_A_MAX_FRAC
+    if tall:
+        a_max = min(a_max, POS_A_TALL_SHARE * float(np.median(tall)) / x_height)
+    out = []
+    for wb, (pieces, word, status) in words_read:
+        new, changed = [], False
+        for k, (b, c) in enumerate(pieces):
+            nc = fix_by_position(mask[b[1]:b[3], b[0]:b[2]], b, c, base_at((b[0] + b[2]) / 2), x_height,
+                                 first_in_word=(k == 0), mixed_case=mixed_case,
+                                 a_max=a_max) if c else c
+            changed = changed or (nc is not c)
+            new.append((b, nc))
+        if changed:
+            word, status = resolve_word([c for _, c in new], word_set)
+        out.append((wb, (new, word, status)))
+    return out
+
+
 # ---- Word grouping for Latin ----
 # Same 1D Otsu gap split as the Baybayin side, plus a floor: a gap only
 # counts as a word space if it is at least this fraction of the median
 # letter height. Without the floor, a line holding ONE word (no real word
 # gap) would still be split wherever its letter gaps happen to differ.
 WORD_GAP_MIN_FRAC = 0.45
+# A word written with wide but EVEN spacing ("M a r a s a" close together):
+# when every gap in the line is already above the floor, all gaps are about
+# the same size (biggest <= 1.6 x smallest) and none is wider than one letter
+# height, the line is ONE word - there is no small/big gap difference to
+# separate words by.
+WORD_GAP_UNIFORM_RATIO = 1.6
+WORD_GAP_UNIFORM_MAX_FRAC = 1.0
+# A gap wider than this x the letter height is ALWAYS a word break, even when
+# the other gaps on the line are bigger ("M  a  r  a  s  a": every letter is
+# its own box). Letter gaps inside a word stay well below this.
+WORD_GAP_ALWAYS_FRAC = 1.0
 
 
 def group_latin_words(boxes, min_frac=WORD_GAP_MIN_FRAC):
@@ -1214,7 +1466,12 @@ def group_latin_words(boxes, min_frac=WORD_GAP_MIN_FRAC):
         return [row]
     median_h = float(np.median([b[3] - b[1] for b in row]))
     gaps = [row[i][0] - row[i - 1][2] for i in range(1, len(row))]
+    if (len(gaps) >= 2 and min(gaps) > min_frac * median_h
+            and max(gaps) <= WORD_GAP_UNIFORM_RATIO * min(gaps)
+            and max(gaps) <= WORD_GAP_UNIFORM_MAX_FRAC * median_h):
+        return [row]                                  # evenly spaced: one word
     word_gap = max(otsu_1d_threshold(gaps), min_frac * median_h)
+    word_gap = min(word_gap, WORD_GAP_ALWAYS_FRAC * median_h)   # far apart = new word
     words, current = [], [row[0]]
     for i in range(1, len(row)):
         if gaps[i - 1] > word_gap:
@@ -1409,6 +1666,14 @@ _WORD_SET = None
 
 NOISE_CONFIDENCE_THRESHOLD = 0.30   # same as the Baybayin service
 
+# Word list (Tagalog_words.csv) for Latin to Baybayin: OFF.
+# Latin spelling has no ambiguity (the user writes the Filipino word), so the
+# SVM's letters are used as they are - no dictionary correction, and no
+# real-word protection for the veto. (Baybayin to Latin still uses its word
+# list, because there e/i and o/u ARE ambiguous.)
+# Set to True to turn the dictionary correction + protection back on.
+USE_DICTIONARY = False
+
 # ---------------------------------------------------------------------
 # ERROR HANDLING: REJECT LETTERS THE MODEL NEVER LEARNED
 # ---------------------------------------------------------------------
@@ -1425,6 +1690,224 @@ NOISE_CONFIDENCE_THRESHOLD = 0.30   # same as the Baybayin service
 # Without latin_reject.json nothing changes. Any error here only skips
 # the rejection - it can never stop a scan.
 _REJECT_CFG = None
+
+# ---------------------------------------------------------------------
+# TWO-MODEL VETO: letters Baybayin cannot write (c f j q v x z)
+# ---------------------------------------------------------------------
+# The 19-class model READS every letter (unchanged). The 26-class model,
+# which was trained with 3,920 images of c f j q v x z as well, is only
+# asked about the FINAL letters: "is this one of c f j q v x z?"
+#     P(unsupported) = sum of its probabilities for c f j q v x z
+# A letter is DROPPED (no box, no prediction) when P(unsupported) >= the
+# limit measured in Colab (latin_veto.json) and the word is not a real
+# Filipino word. Needs 3 files in python/models/:
+#     model_latin26.npz, latin26_classes.json, latin_veto.json
+# If any is missing, the veto is simply off.
+_VETO = None                     # {'model', 'cols', 'threshold'} when loaded
+VETO_UNSUPPORTED = set('cfjqvxz')
+# the word list has junk short entries ('ee', 'ky', 'pp'...): a 1-2 letter
+# word only protects its letters if it is a common Filipino short word
+TRUSTED_SHORT_WORDS = {
+    'ay', 'at', 'sa', 'si', 'ni', 'na', 'ng', 'ko', 'mo', 'ka', 'ba', 'po',
+    'di', 'ma', 'pa', 'ha', 'oo', 'o', 'e', 'ga',
+}
+
+
+SHORT_WORD_MIN_CONF = 0.60   # a 1-2 letter word read this unsurely is not protected
+
+
+def is_trusted_word(word, word_set, confidences=None):
+    """A real Filipino word: the veto never touches its letters.
+    Short words (1-2 letters) are easy to form BY ACCIDENT (J j -> "di"), so
+    they are only protected when every letter was read at least 60% sure."""
+    if not word_set or not word:
+        return False
+    if len(word) <= 2:
+        if confidences is not None and min(confidences) < SHORT_WORD_MIN_CONF:
+            return False
+        return word in TRUSTED_SHORT_WORDS
+    return word in word_set
+
+
+def load_veto(folder):
+    """Loads the 26-class veto model; returns None (veto off) on any problem."""
+    global _VETO
+    try:
+        npz = os.path.join(folder, 'model_latin26.npz')
+        cls = os.path.join(folder, 'latin26_classes.json')
+        cfg = os.path.join(folder, 'latin_veto.json')
+        if not (os.path.exists(npz) and os.path.exists(cls) and os.path.exists(cfg)):
+            return None
+        model = OfflineSVC(npz)
+        with open(cls, encoding='utf-8') as f:
+            names = [str(c).lower() for c in json.load(f)['latin_classes']]
+        with open(cfg, encoding='utf-8') as f:
+            threshold = float(json.load(f)['threshold'])
+        labels = [names[int(c)] for c in model.classes_]
+        cols = [k for k, name in enumerate(labels) if name in VETO_UNSUPPORTED]
+        if len(cols) != len(VETO_UNSUPPORTED) or not 0 < threshold < 1:
+            return None
+        _VETO = {'model': model, 'cols': cols, 'threshold': threshold,
+                 'names': [labels[k] for k in cols]}
+    except Exception:
+        _VETO = None
+    return _VETO
+
+
+def veto_probs(glyph_masks, veto=None):
+    """P(c f j q v x z) per mark from the 26-class model; None when the veto is off."""
+    veto = veto if veto is not None else _VETO
+    if not veto or not glyph_masks:
+        return None
+    try:
+        feats = np.vstack([latin_features(g) for g in glyph_masks])
+        return [float(v) for v in veto['model'].predict_proba(feats)[:, veto['cols']].sum(axis=1)]
+    except Exception:
+        return None
+
+
+# A 'u' written with a slightly pointed bottom looks like a 'v' (one of the
+# top confusions of the 26-class model), and 'kung' lost its 'u'. 'u' is very
+# common in Filipino and 'v' is rare, so when the 19-class reader is at least
+# 90% sure the letter is 'u', a 'v' veto is ignored. Other unsupported letters
+# (q, f, c, z...) are dropped exactly as before.
+VETO_LOOKALIKES = {'v': {'u'}}       # unsupported letter -> supported letters it resembles
+VETO_LOOKALIKE_TRUST = 0.90
+# Soft veto: BOTH models disagree with the letter. A Z has no class in the
+# 19-class reader, so it is read as 'i'/'l' (or something else) unsurely,
+# while the 26-class model thinks it is probably a z, but not 83% sure.
+# Dropped when P(unsupported) >= 50% AND the reader's answer does not fit:
+#   - the reader is unsure (below 60%), or
+#   - the reader says i/l but the mark is far too wide for one stroke
+#     (an i/l is a thin stroke; a Z is almost as wide as it is tall).
+# A capital L is wide too, but the 26-class model does not call it unsupported.
+VETO_SOFT_LIMIT = 0.50
+VETO_SOFT_READER_BELOW = 0.60
+VETO_THIN_LETTERS = {'i', 'l'}
+VETO_THIN_MAX_WIDTH = 0.60          # width / height of an i or l at most
+# Shape check WITHOUT the 26-class model: an 'i'/'l' reading of a mark that
+# is far too wide for one stroke, read unsurely, is not a letter we know
+# (a Z read as 'l' 33%). A capital L is wide too but is read surely.
+WIDE_THIN_READER_BELOW = 0.50
+
+
+# The percentage of a Z read as 'l' changes from photo to photo (33%, 55%...),
+# so a rule based on it flickers. The SHAPE does not change: an i / l / I / L
+# has an upright stroke in its middle part (normal handwriting slant is under
+# ~25 degrees, a sideways move of < 0.47 per row), while a Z's middle part is
+# its diagonal (~35-50 degrees). An 'i'/'l' reading whose middle part slants
+# more than STROKE_MAX_SLANT is not an i or l -> removed, at any percentage.
+STROKE_MAX_SLANT = 0.55        # sideways move per row (tan of the angle from upright)
+STROKE_MIN_ROWS = 6
+
+
+def middle_stroke_slant(glyph):
+    """Sideways move per row of the ink in the middle half of the mark
+    (0 = upright). None when there is too little to measure."""
+    g = glyph > 0
+    h = g.shape[0]
+    rows, centers = [], []
+    for r in range(int(h * 0.25), int(h * 0.75) + 1):
+        if r >= h:
+            break
+        cols = np.flatnonzero(g[r])
+        if cols.size:
+            rows.append(r)
+            centers.append(cols.mean())
+    if len(rows) < STROKE_MIN_ROWS:
+        return None
+    return abs(float(np.polyfit(rows, centers, 1)[0]))
+
+
+Z_BAR_MIN_SPAN = 0.45          # a bar row spans at least this share of the width
+Z_STROKE_MAX_SPAN = 0.30       # a middle-stroke row spans at most this share
+Z_BAR_OUT = 0.25               # the bar sticks out at least this far on its own side
+Z_BAR_IN = 0.20                # ... and at most this far on the other side
+
+
+def _row_ends(g, r):
+    cols = np.flatnonzero(g[r])
+    return (cols.min(), cols.max()) if cols.size else None
+
+
+def is_z_shape(glyph):
+    """True for a Z: a top bar sticking out to the LEFT of the middle stroke,
+    a bottom bar sticking out to the RIGHT of it. A serif I has bars on BOTH
+    sides, an L has no top bar, a plain i / l has no bars."""
+    g = glyph > 0
+    h, w = g.shape
+    if h < 12 or w < 0.35 * h:
+        return False
+    spans = [(_row_ends(g, r), r) for r in range(h)]
+    width = lambda e: (e[1] - e[0] + 1) / w if e else 0.0
+    top = [(width(e), e) for e, r in spans[:max(1, int(0.25 * h))]]
+    bot = [(width(e), e) for e, r in spans[int(0.65 * h):]]
+    if not top or not bot:
+        return False
+    t_span, t_end = max(top, key=lambda x: x[0])
+    b_span, b_end = max(bot, key=lambda x: x[0])
+    if t_span < Z_BAR_MIN_SPAN or b_span < Z_BAR_MIN_SPAN:
+        return False
+    mid = [((e[0] + e[1]) / 2) / w for e, r in spans[int(0.2 * h):int(0.8 * h)]
+           if e and width(e) <= Z_STROKE_MAX_SPAN]
+    if len(mid) < 5:
+        return False
+    ct, cb = mid[0], mid[-1]                       # stroke centre at its top / bottom
+    tl, tr = t_end[0] / w, t_end[1] / w
+    bl, br = b_end[0] / w, b_end[1] / w
+    return (tl <= ct - Z_BAR_OUT and tr <= ct + Z_BAR_IN
+            and br >= cb + Z_BAR_OUT and bl >= cb - Z_BAR_IN)
+
+
+def wide_thin_letter(glyph, letter, prob):
+    """True = an 'i'/'l' reading that cannot be an i or l:
+    - its middle part is a steep diagonal (a Z), or
+    - it is much too wide for one stroke and read unsurely."""
+    if letter not in VETO_THIN_LETTERS:
+        return False
+    gh, gw = glyph.shape[:2]
+    if gh <= 0:
+        return False
+    slant = middle_stroke_slant(glyph)
+    if slant is not None and slant > STROKE_MAX_SLANT:
+        return True
+    if is_z_shape(glyph):                    # a Z read as i/l, at any percentage
+        return True
+    return prob < WIDE_THIN_READER_BELOW and gw > VETO_THIN_MAX_WIDTH * gh
+
+
+def veto_unsupported(glyph_masks, veto=None, reader=None):
+    """[True/False] per letter: True = the 26-class model is sure it is
+    c f j q v x z. reader = the 19-class reader's (letter, prob) per glyph
+    (optional). Never raises (any error = no veto)."""
+    veto = veto if veto is not None else _VETO
+    if not veto or not glyph_masks:
+        return [False] * len(glyph_masks)
+    try:
+        feats = np.vstack([latin_features(g) for g in glyph_masks])
+        probs = veto['model'].predict_proba(feats)[:, veto['cols']]
+        p_un = probs.sum(axis=1)
+        flags = [bool(v >= veto['threshold']) for v in p_un]
+        if reader and len(reader) == len(flags):
+            for k, (letter, p) in enumerate(reader):
+                if flags[k] or p_un[k] < VETO_SOFT_LIMIT:
+                    continue
+                gh, gw = glyph_masks[k].shape[:2]
+                too_wide = letter in VETO_THIN_LETTERS and gh > 0 and gw > VETO_THIN_MAX_WIDTH * gh
+                if p < VETO_SOFT_READER_BELOW or too_wide:
+                    flags[k] = True
+        names = veto.get('names')
+        if reader and names and len(reader) == len(flags):
+            for k, flag in enumerate(flags):
+                if not flag:
+                    continue
+                unsup = names[int(np.argmax(probs[k]))]
+                letter, p = reader[k]
+                if letter in VETO_LOOKALIKES.get(unsup, ()) and p >= VETO_LOOKALIKE_TRUST:
+                    flags[k] = False
+        return flags
+    except Exception:
+        return [False] * len(glyph_masks)
 PAGE_REJECT_FRACTION = 0.5     # this share of letters rejected -> no Latin on the photo
 UNKNOWN_MARK = '?'
 # What happens to a rejected letter:
@@ -1666,6 +2149,8 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
     latin_model = latin_model or _LATIN_MODEL
     latin_classes = latin_classes or _LATIN_CLASSES
     word_set = word_set if word_set is not None else _WORD_SET
+    if not USE_DICTIONARY:
+        word_set = None          # Latin to Baybayin uses the SVM's letters as they are
     if latin_model is None or latin_classes is None:
         raise ValueError('Latin model not loaded - call warm_up_latin() first')
 
@@ -1753,6 +2238,7 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
 
         # one box per separate mark; the i-dot is joined to its own stem
         boxes = segment_latin_glyphs(line_bin)
+        boxes = merge_stacked_boxes(boxes)              # a broken-off top bar joins its letter
         boxes = drop_orphan_fragments(boxes)            # drops specks / punctuation
         boxes = drop_too_tall_boxes(boxes)              # drops paper edges / shadows
         # cracks, lines and blobs can never be letters - throw them away
@@ -1791,12 +2277,17 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
 
         line_latin, line_bayb = [], []
         line_median_h = float(np.median([b[3] - b[1] for b in boxes]))
-        for word_boxes in group_latin_words(boxes):
+        # touching letters are split, broken letters are joined
+        words_read = [(wb, read_word(full_mask, wb, line_median_h, latin_model,
+                                     latin_classes, word_set))
+                      for wb in group_latin_words(boxes)]
+        if USE_LINE_POSITION:
+            try:
+                words_read = apply_line_position(full_mask, words_read, word_set)
+            except Exception:
+                pass                          # never stop a scan because of this check
+        for word_boxes, (pieces, latin_word, status) in words_read:
             cands_per_letter, letter_dets, letter_glyphs = [], [], []
-            # touching letters are split, broken letters are joined - the
-            # reading that forms a real Filipino word wins
-            pieces, latin_word, status = read_word(
-                full_mask, word_boxes, line_median_h, latin_model, latin_classes, word_set)
             for (x0, y0, x1, y1), cands in pieces:
                 glyph = full_mask[y0:y1, x0:x1]
                 if cands[0][1] < NOISE_CONFIDENCE_THRESHOLD and status != 'dictionary':
@@ -1840,6 +2331,16 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
             if not is_real and len(latin_word) == len(letter_dets):
                 rejected = reject_unknown_letters(
                     letter_glyphs, [c[0][1] for c in cands_per_letter], latin_model)
+            if len(latin_word) == len(letter_dets):
+                rejected = [r or wide_thin_letter(g, ch, c[0][1]) for r, g, ch, c
+                            in zip(rejected, letter_glyphs, latin_word, cands_per_letter)]
+            # two-model veto: the 26-class model is sure it is c f j q v x z
+            if (_VETO and len(latin_word) == len(letter_dets)
+                    and not is_trusted_word(latin_word, word_set,
+                                            [c[0][1] for c in cands_per_letter])):
+                reader = [(ch, c[0][1]) for ch, c in zip(latin_word, cands_per_letter)]
+                rejected = [r or v for r, v in zip(rejected, veto_unsupported(letter_glyphs,
+                                                                              reader=reader))]
             letters_total += len(letter_dets)
             if any(rejected) and REJECT_MODE == 'drop':
                 # unknown letters are removed: no prediction, no box
@@ -1969,6 +2470,10 @@ def warm_up_latin(word_set=None):
         else:                               # PC testing with the .pkl files
             load_latin_model(os.path.join(MODULE_DIR, 'model_latin.pkl'),
                              os.path.join(MODULE_DIR, 'latin_metadata.pkl'))
+        # optional: the two-model veto (26-class model + measured limit)
+        for folder in (os.path.join(MODULE_DIR, 'models'), MODULE_DIR):
+            if load_veto(folder):
+                break
         # optional: the measured limit for rejecting unknown letters
         for folder in (os.path.join(MODULE_DIR, 'models'), MODULE_DIR):
             cfg = os.path.join(folder, 'latin_reject.json')
@@ -1977,7 +2482,7 @@ def warm_up_latin(word_set=None):
                 break
     if word_set is not None:
         _WORD_SET = {str(w).lower() for w in word_set}
-    elif _WORD_SET is None:
+    elif _WORD_SET is None and USE_DICTIONARY:          # not loaded when the dictionary is off
         _WORD_SET = _load_word_csv() or None
         if not _WORD_SET:
             borrowed = _borrow_baybayin_word_set()
