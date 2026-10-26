@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show applyBoxFit, FittedSizes;
@@ -10,6 +9,7 @@ import '../services/offline_recognizer.dart';
 import '../services/recognition_outcome.dart';
 import '../widgets/image_cropper_widget.dart';
 import '../screens/camera_capture_screen.dart';
+import '../screens/latin_result_screen.dart';
 import '../widgets/dayaw_style.dart';
 import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
@@ -24,8 +24,9 @@ import '../widgets/glass.dart';
 ///
 /// Same look as the Baybayin to Latin tab: shimmering hero header, a
 /// glowing scanner card with word boxes, a pop-in result card with a
-/// confidence ring, a syllable breakdown, the letters the model read,
-/// writing tips and rotating Baybayin facts.
+/// confidence ring, writing tips and rotating Baybayin facts. The
+/// syllable and letter breakdowns are on LatinResultScreen, which opens
+/// after a scan (like BaybayinResultScreen on the other tab).
 class LatinToBaybayinView extends StatefulWidget {
   const LatinToBaybayinView({super.key});
 
@@ -60,9 +61,6 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
   /// Words per text line, in reading order. Each word map has:
   /// word_id, latin, baybayin, syllables [{latin, baybayin}], bbox.
   List<List<Map<String, dynamic>>> _lines = [];
-
-  /// Letters (detections) grouped by word_id.
-  Map<int, List<Map<String, dynamic>>> _lettersByWord = {};
 
   @override
   void initState() {
@@ -144,7 +142,6 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
       _data = null;
       _message = null;
       _lines = [];
-      _lettersByWord = {};
     });
 
     final response = await OfflineRecognizer.recognizeLatin(bytes);
@@ -180,6 +177,45 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
         _buildLinesFrom(response);
       }
     });
+
+    // Like the Baybayin tab: open the full result screen after a scan.
+    if (_data != null) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) _openResult(haptic: false);
+      });
+    }
+  }
+
+  /// Opens the full result screen (photo filters, letter boxes, syllable
+  /// breakdown, the letters the model read, export) for the last scan.
+  void _openResult({bool haptic = true}) {
+    final data = _data;
+    final image = _image;
+    if (_isLoading || data == null || image == null) return;
+    if (haptic && AppSettings.instance.hapticsEnabled) {
+      HapticFeedback.selectionClick();
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LatinResultScreen(
+          sourceImage: image,
+          baybayinText: data['translated_text']?.toString() ?? '',
+          latinText: data['latin_text']?.toString() ?? '',
+          words: [
+            for (final w in (data['words'] as List? ?? const []))
+              if (w is Map) Map<String, dynamic>.from(w),
+          ],
+          // The Latin reply lists its letters under 'detections'. Only
+          // letters with a box are passed, so a bad entry can't crash it.
+          detections: [
+            for (final d in (data['detections'] as List? ?? const []))
+              if (d is Map && d['bbox'] is Map) Map<String, dynamic>.from(d),
+          ],
+          imageWidth: readNumber(data, 'image_width'),
+          imageHeight: readNumber(data, 'image_height'),
+        ),
+      ),
+    );
   }
 
   /// Splits the reply's words into text lines, using latin_text's line
@@ -206,15 +242,6 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
     }
     if (start < words.length) lines.add(words.sublist(start));
     _lines = lines;
-
-    final byWord = <int, List<Map<String, dynamic>>>{};
-    for (final d in (data['detections'] as List? ?? const [])) {
-      if (d is! Map) continue;
-      final m = Map<String, dynamic>.from(d);
-      final id = (m['word_id'] as num?)?.toInt() ?? -1;
-      byWord.putIfAbsent(id, () => []).add(m);
-    }
-    _lettersByWord = byWord;
   }
 
   void _copyResult() {
@@ -306,24 +333,6 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
         if (hasResult || (_message != null && !_isLoading)) ...[
           const SizedBox(height: 24),
           _buildResultCard(),
-        ],
-        if (hasResult && _lines.isNotEmpty) ...[
-          const SizedBox(height: 28),
-          _sectionTitle(
-            context.tr('Syllable breakdown', 'Paghahati sa pantig'),
-            Icons.grid_view_rounded,
-          ),
-          const SizedBox(height: 12),
-          for (var i = 0; i < _lines.length; i++)
-            _buildLineSection(i + 1, _syllableCards(_lines[i])),
-          const SizedBox(height: 14),
-          _sectionTitle(
-            context.tr('Letters the model read', 'Mga titik na nabasa'),
-            Icons.text_fields,
-          ),
-          const SizedBox(height: 12),
-          for (var i = 0; i < _lines.length; i++)
-            _buildLineSection(i + 1, _letterCards(_lines[i])),
         ],
         const SizedBox(height: 28),
         _sectionTitle(
@@ -844,6 +853,29 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
                 ),
               ),
             ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _openResult,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _deepBrown,
+                  side: BorderSide(color: _deepBrown.withValues(alpha: 0.5)),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                icon: const Icon(Icons.grid_view_rounded, size: 18),
+                label: Text(
+                  context.tr(
+                    'View letter breakdown',
+                    'Tingnan ang bawat titik',
+                  ),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -912,234 +944,6 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
               fontWeight: FontWeight.w600,
               color: _deepBrown,
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------------
-  // Breakdowns
-  // ---------------------------------------------------------------------
-
-  /// One glass card per text line: a line badge, then a sideways row.
-  Widget _buildLineSection(int lineNumber, List<Widget> cards) {
-    return GlassContainer(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(12),
-      borderRadius: const BorderRadius.all(Radius.circular(18)),
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: _deepBrown,
-              gradient: themedGradient(
-                const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [_deepBrown, Color(0xFF6D4C41)],
-                ),
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '$lineNumber',
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w900,
-                    color: _gold,
-                    height: 1,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  context.tr('LINE', 'LINYA'),
-                  style: TextStyle(
-                    fontSize: 9,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1,
-                    color: Colors.white.withValues(alpha: 0.8),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              clipBehavior: Clip.none,
-              child: Row(children: cards),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Syllable cards for one line, with a small gap between words.
-  List<Widget> _syllableCards(List<Map<String, dynamic>> words) {
-    final cards = <Widget>[];
-    var index = 0;
-    for (var w = 0; w < words.length; w++) {
-      if (w > 0) cards.add(const SizedBox(width: 14));
-      for (final s in (words[w]['syllables'] as List? ?? const [])) {
-        if (s is! Map) continue;
-        cards.add(
-          _buildPiece(
-            s['latin']?.toString() ?? '',
-            s['baybayin']?.toString() ?? '',
-            index++,
-          ),
-        );
-      }
-    }
-    return cards;
-  }
-
-  /// Baybayin glyph over its Latin syllable; pops in left to right.
-  Widget _buildPiece(String latin, String baybayin, int index) {
-    return TweenAnimationBuilder<double>(
-      key: ValueKey('$latin-$index'),
-      tween: Tween(begin: 0, end: 1),
-      duration: Duration(milliseconds: 320 + 60 * math.min(index, 8)),
-      curve: Curves.easeOutBack,
-      builder: (context, t, child) => Opacity(
-        opacity: t.clamp(0.0, 1.0),
-        child: Transform.scale(scale: 0.7 + 0.3 * t, child: child),
-      ),
-      child: Container(
-        margin: const EdgeInsets.only(right: 8),
-        width: 64,
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          color: Colors.white,
-          gradient: themedGradient(
-            LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.white.withValues(alpha: 0.95),
-                _yellow.withValues(alpha: 0.35),
-              ],
-            ),
-          ),
-          border: Border.all(color: _amber.withValues(alpha: 0.6)),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x22D9A441),
-              blurRadius: 8,
-              offset: Offset(0, 3),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              height: 40,
-              child: Center(
-                child: Text(
-                  baybayin,
-                  style: const TextStyle(
-                    fontFamily: 'BaybayinCustom',
-                    fontSize: 28,
-                    color: _deepBrown,
-                  ),
-                ),
-              ),
-            ),
-            Container(
-              margin: const EdgeInsets.symmetric(vertical: 4),
-              width: 24,
-              height: 2,
-              decoration: BoxDecoration(
-                color: _amber.withValues(alpha: 0.7),
-                borderRadius: BorderRadius.circular(1),
-              ),
-            ),
-            Text(
-              latin,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                color: Colors.brown,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// The 56x56 image the Latin SVM saw for each letter, with its answer.
-  List<Widget> _letterCards(List<Map<String, dynamic>> words) {
-    final cards = <Widget>[];
-    for (var w = 0; w < words.length; w++) {
-      if (w > 0) cards.add(const SizedBox(width: 14));
-      final id = (words[w]['word_id'] as num?)?.toInt() ?? -1;
-      for (final d in _lettersByWord[id] ?? const <Map<String, dynamic>>[]) {
-        cards.add(_buildLetterCard(d));
-      }
-    }
-    return cards;
-  }
-
-  Widget _buildLetterCard(Map<String, dynamic> d) {
-    final conf = readNumber(d, 'confidence');
-    Uint8List? image;
-    final b64 = d['processed_image'];
-    if (b64 is String && b64.isNotEmpty) {
-      try {
-        image = base64Decode(b64);
-      } catch (_) {
-        image = null;
-      }
-    }
-    return Container(
-      margin: const EdgeInsets.only(right: 8),
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.75),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: image == null
-                ? const SizedBox(width: 48, height: 48)
-                : Image.memory(
-                    image,
-                    width: 48,
-                    height: 48,
-                    fit: BoxFit.contain,
-                    filterQuality: FilterQuality.none,
-                    gaplessPlayback: true,
-                  ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            d['char']?.toString() ?? '?',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: _confidenceColor(conf),
-            ),
-          ),
-          Text(
-            '${conf.round()}%',
-            style: const TextStyle(fontSize: 10, color: Colors.black54),
           ),
         ],
       ),

@@ -1065,7 +1065,8 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               color: Colors.brown.withValues(alpha: 0.25),
             ),
             // Tapping the Latin letter opens the reference chart; tapping
-            // it again closes it.
+            // it again closes it. The character's confidence is shown
+            // under it (same as the Latin to Baybayin result screen).
             Center(
               child: InkWell(
                 onTap: () => _toggleChart(key),
@@ -1083,13 +1084,25 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                         : _accentColor.withValues(alpha: 0),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Text(
-                    result.char,
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: _confidenceColor(result.confidence),
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        result.char,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: _confidenceColor(result.confidence),
+                        ),
+                      ),
+                      Text(
+                        '${result.confidence.round()}%',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          color: Colors.black54,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
