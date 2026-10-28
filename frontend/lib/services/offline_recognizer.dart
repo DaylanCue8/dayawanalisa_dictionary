@@ -91,8 +91,10 @@ class OfflineRecognizer {
   // ---------------------------------------------------------------------
 
   /// Reads handwritten Latin letters in [imageBytes] and converts them to
-  /// Baybayin. Same contract as [recognize]: never throws, returns null on
-  /// any failure.
+  /// Baybayin. [inputType] is 'pen' or 'marker', the same choice as the
+  /// Baybayin side: pen photos are enhanced (denoise, contrast, sharpen),
+  /// marker photos are not. Same contract as [recognize]: never throws,
+  /// returns null on any failure.
   ///
   /// Reply keys: status ('ok' | 'blurry' | 'no_text'), message,
   /// translated_text / baybayin_text, latin_text, confidence,
@@ -100,8 +102,9 @@ class OfflineRecognizer {
   /// processed_image), words (word_id, latin, baybayin, syllables, bbox),
   /// image_width, image_height.
   static Future<Map<String, dynamic>?> recognizeLatin(
-    Uint8List imageBytes,
-  ) async {
+    Uint8List imageBytes, {
+    String inputType = 'pen',
+  }) async {
     if (imageBytes.isEmpty) {
       debugPrint('[OFFLINE] recognizeLatin skipped: empty image');
       return null;
@@ -109,14 +112,17 @@ class OfflineRecognizer {
     Map<String, dynamic>? data;
     try {
       final json = await channel
-          .invokeMethod<String>('recognizeLatin', {'image': imageBytes})
+          .invokeMethod<String>('recognizeLatin', {
+            'image': imageBytes,
+            'inputType': inputType,
+          })
           .timeout(timeout);
       data = _decode(json, 'recognizeLatin');
     } catch (e) {
       debugPrint('[OFFLINE] recognizeLatin failed: $e');
       data = null;
     }
-    unawaited(_saveEvalCopy(imageBytes, 'latin', data));
+    unawaited(_saveEvalCopy(imageBytes, 'latin_$inputType', data));
     return data;
   }
 

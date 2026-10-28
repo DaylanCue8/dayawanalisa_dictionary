@@ -14,7 +14,7 @@ import java.util.concurrent.Executors
  * (Python on Android). Flutter talks to them over the "dayaw/offline_ocr"
  * channel:
  *   recognize(image: bytes, inputType: "pen"|"marker") -> JSON string   (Baybayin -> Latin)
- *   recognizeLatin(image: bytes)                        -> JSON string   (Latin -> Baybayin)
+ *   recognizeLatin(image: bytes, inputType: "pen"|"marker") -> JSON string (Latin -> Baybayin)
  *   translateText(text)                                 -> JSON string   (OLD typed mode, to be removed)
  *   warmUp()                                            -> loads the models early
  * Python runs on a background thread so the screen never freezes.
@@ -51,11 +51,12 @@ class MainActivity : FlutterActivity() {
                     }
                     "recognizeLatin" -> {
                         val image = call.argument<ByteArray>("image")
+                        val inputType = call.argument<String>("inputType") ?: "pen"
                         if (image == null) {
                             result.error("NO_IMAGE", "No image bytes were sent", null)
                         } else {
                             runPython(result, latinModule) { module ->
-                                module.callAttr("recognize_latin_json", image).toString()
+                                module.callAttr("recognize_latin_json", image, inputType).toString()
                             }
                         }
                     }

@@ -15,7 +15,11 @@
 #   - touching letters: recognition-based splitting - every way of cutting
 #     a wide box is scored by the SVM and the most confident cut wins
 #   - each letter: normalize_for_model (56x56, 12% margin) -> HOG 8x8/2x2
-#     -> Latin RBF SVM (19 classes) with probability
+#     -> Latin RBF SVM (19 classes) with probability - the ONLY Latin model.
+#     The 7 letters Baybayin cannot write (c f j q v x z) are not classes.
+#     c, x, z and j are caught by their SHAPE after reading and removed
+#     (unsupported_shape); f, q and v are outside the scope and are read
+#     as the most similar of the 19 letters.
 #   - optional dictionary correction using each letter's 2nd-best guess
 #     (fixes I/l, u/n ... when the word is not a real Filipino word)
 #   - letters -> syllables -> Baybayin (b+a = BA, ng = NGA, final
@@ -23,7 +27,7 @@
 #
 # The app only needs:
 #   warm_up_latin()                  (once - loads model_latin.npz + latin_classes.json)
-#   recognize_latin_json(image_bytes) (per photo)
+#   recognize_latin_json(image_bytes, input_type) (per photo; 'pen' or 'marker')
 #
 # Like the Baybayin side, the phone needs NO scikit-learn / scikit-image:
 # HOG and the RBF SVM run in plain NumPy (numpy_hog + OfflineSVC, copied
@@ -93,6 +97,20 @@ def enhance_image_quality(gray_img):
     blurred = cv2.GaussianBlur(contrasted, (0, 0), sigmaX=3)
     sharpened = cv2.addWeighted(contrasted, 1.5, blurred, -0.5, 0)
     return sharpened
+
+
+def upscale_if_small(gray_img, min_long_side=MIN_LONG_SIDE_PX):
+    """Marker path: only the 'too small' upscale of enhance_image_quality,
+    without denoising, CLAHE or sharpening. Marker strokes are thick and
+    dark and do not need them (same rule as the Baybayin marker service)."""
+    height, width = gray_img.shape[:2]
+    long_side = max(height, width)
+    if long_side < min_long_side:
+        scale = min_long_side / float(long_side)
+        gray_img = cv2.resize(
+            gray_img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+        )
+    return gray_img
 
 
 def preprocess_image(gray_img):
@@ -1152,13 +1170,6 @@ SPLIT_NORMAL_BELOW = RECOG_KEEP_CONFIDENCE
 JOIN_TOUCH_GAP = 0.04
 JOIN_SHORT_FRAC = 0.60
 MAX_READINGS = 256            # most cuttings tried per word
-# A letter the reader never learned (Z, C, ...) is read UNSURELY as a whole,
-# so cutting it into 'i' + 'l' pieces looked better ("Zz" -> "ilil").
-# The 26-class model is asked about every WHOLE box first: if it thinks the
-# box is probably c f j q v x z, the box is never cut, and broken pieces that
-# together form such a letter are joined back. The final drop still uses the
-# measured limit (latin_veto.json).
-VETO_KEEP_WHOLE = 0.50
 
 
 def _box_union(bs):
@@ -1184,15 +1195,7 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
     whole_cands = dict(zip(whole_list, classify_latin_batch(
         [mask[b[1]:b[3], b[0]:b[2]] for b in whole_list], model, classes))) if whole_list else {}
 
-    whole_unsup = {}
-    if whole_list and _VETO:
-        pv = veto_probs([mask[b[1]:b[3], b[0]:b[2]] for b in whole_list])
-        if pv:
-            whole_unsup = dict(zip(whole_list, pv))
-
     def worth_splitting(b):
-        if whole_unsup.get(b, 0.0) >= VETO_KEEP_WHOLE:
-            return False                          # probably Z / C / ...: never cut it
         w = b[2] - b[0]
         if w < SPLIT_MIN_WIDTH * median_h:
             return False                          # too narrow for 2 letters
@@ -1249,21 +1252,8 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
         cands.update(zip([all_boxes[k] for k in keep],
                          classify_latin_batch([crops[k] for k in keep], model, classes)))
 
-    # joined boxes (broken pieces put back together) are also asked
-    unsup = dict(whole_unsup)
-    if _VETO:
-        joined = sorted({bxs[0] for lst in edges.values() for j, bxs, pen in lst
-                         if pen == MERGE_MARGIN and len(bxs) == 1 and bxs[0] in cands})
-        if joined:
-            pv = veto_probs([mask[bx[1]:bx[3], bx[0]:bx[2]] for bx in joined])
-            if pv:
-                unsup.update(zip(joined, pv))
-
     def box_score(bx):
         p = cands[bx][0][1]
-        u = unsup.get(bx, 0.0)
-        if u >= VETO_KEEP_WHOLE:
-            p = max(p, u)                         # a sure Z / C counts as a sure mark
         return float(np.log(max(p, 1e-6)))
 
     # ---- 3. every reading (path through the word), best first ----
@@ -1668,8 +1658,8 @@ NOISE_CONFIDENCE_THRESHOLD = 0.30   # same as the Baybayin service
 
 # Word list (Tagalog_words.csv) for Latin to Baybayin: OFF.
 # Latin spelling has no ambiguity (the user writes the Filipino word), so the
-# SVM's letters are used as they are - no dictionary correction, and no
-# real-word protection for the veto. (Baybayin to Latin still uses its word
+# SVM's letters are used as they are - no dictionary correction.
+# (Baybayin to Latin still uses its word
 # list, because there e/i and o/u ARE ambiguous.)
 # Set to True to turn the dictionary correction + protection back on.
 USE_DICTIONARY = False
@@ -1691,101 +1681,10 @@ USE_DICTIONARY = False
 # the rejection - it can never stop a scan.
 _REJECT_CFG = None
 
-# ---------------------------------------------------------------------
-# TWO-MODEL VETO: letters Baybayin cannot write (c f j q v x z)
-# ---------------------------------------------------------------------
-# The 19-class model READS every letter (unchanged). The 26-class model,
-# which was trained with 3,920 images of c f j q v x z as well, is only
-# asked about the FINAL letters: "is this one of c f j q v x z?"
-#     P(unsupported) = sum of its probabilities for c f j q v x z
-# A letter is DROPPED (no box, no prediction) when P(unsupported) >= the
-# limit measured in Colab (latin_veto.json) and the word is not a real
-# Filipino word. Needs 3 files in python/models/:
-#     model_latin26.npz, latin26_classes.json, latin_veto.json
-# If any is missing, the veto is simply off.
-_VETO = None                     # {'model', 'cols', 'threshold'} when loaded
-VETO_UNSUPPORTED = set('cfjqvxz')
-# the word list has junk short entries ('ee', 'ky', 'pp'...): a 1-2 letter
-# word only protects its letters if it is a common Filipino short word
-TRUSTED_SHORT_WORDS = {
-    'ay', 'at', 'sa', 'si', 'ni', 'na', 'ng', 'ko', 'mo', 'ka', 'ba', 'po',
-    'di', 'ma', 'pa', 'ha', 'oo', 'o', 'e', 'ga',
-}
-
-
-SHORT_WORD_MIN_CONF = 0.60   # a 1-2 letter word read this unsurely is not protected
-
-
-def is_trusted_word(word, word_set, confidences=None):
-    """A real Filipino word: the veto never touches its letters.
-    Short words (1-2 letters) are easy to form BY ACCIDENT (J j -> "di"), so
-    they are only protected when every letter was read at least 60% sure."""
-    if not word_set or not word:
-        return False
-    if len(word) <= 2:
-        if confidences is not None and min(confidences) < SHORT_WORD_MIN_CONF:
-            return False
-        return word in TRUSTED_SHORT_WORDS
-    return word in word_set
-
-
-def load_veto(folder):
-    """Loads the 26-class veto model; returns None (veto off) on any problem."""
-    global _VETO
-    try:
-        npz = os.path.join(folder, 'model_latin26.npz')
-        cls = os.path.join(folder, 'latin26_classes.json')
-        cfg = os.path.join(folder, 'latin_veto.json')
-        if not (os.path.exists(npz) and os.path.exists(cls) and os.path.exists(cfg)):
-            return None
-        model = OfflineSVC(npz)
-        with open(cls, encoding='utf-8') as f:
-            names = [str(c).lower() for c in json.load(f)['latin_classes']]
-        with open(cfg, encoding='utf-8') as f:
-            threshold = float(json.load(f)['threshold'])
-        labels = [names[int(c)] for c in model.classes_]
-        cols = [k for k, name in enumerate(labels) if name in VETO_UNSUPPORTED]
-        if len(cols) != len(VETO_UNSUPPORTED) or not 0 < threshold < 1:
-            return None
-        _VETO = {'model': model, 'cols': cols, 'threshold': threshold,
-                 'names': [labels[k] for k in cols]}
-    except Exception:
-        _VETO = None
-    return _VETO
-
-
-def veto_probs(glyph_masks, veto=None):
-    """P(c f j q v x z) per mark from the 26-class model; None when the veto is off."""
-    veto = veto if veto is not None else _VETO
-    if not veto or not glyph_masks:
-        return None
-    try:
-        feats = np.vstack([latin_features(g) for g in glyph_masks])
-        return [float(v) for v in veto['model'].predict_proba(feats)[:, veto['cols']].sum(axis=1)]
-    except Exception:
-        return None
-
-
-# A 'u' written with a slightly pointed bottom looks like a 'v' (one of the
-# top confusions of the 26-class model), and 'kung' lost its 'u'. 'u' is very
-# common in Filipino and 'v' is rare, so when the 19-class reader is at least
-# 90% sure the letter is 'u', a 'v' veto is ignored. Other unsupported letters
-# (q, f, c, z...) are dropped exactly as before.
-VETO_LOOKALIKES = {'v': {'u'}}       # unsupported letter -> supported letters it resembles
-VETO_LOOKALIKE_TRUST = 0.90
-# Soft veto: BOTH models disagree with the letter. A Z has no class in the
-# 19-class reader, so it is read as 'i'/'l' (or something else) unsurely,
-# while the 26-class model thinks it is probably a z, but not 83% sure.
-# Dropped when P(unsupported) >= 50% AND the reader's answer does not fit:
-#   - the reader is unsure (below 60%), or
-#   - the reader says i/l but the mark is far too wide for one stroke
-#     (an i/l is a thin stroke; a Z is almost as wide as it is tall).
-# A capital L is wide too, but the 26-class model does not call it unsupported.
-VETO_SOFT_LIMIT = 0.50
-VETO_SOFT_READER_BELOW = 0.60
-VETO_THIN_LETTERS = {'i', 'l'}
-VETO_THIN_MAX_WIDTH = 0.60          # width / height of an i or l at most
-# Shape check WITHOUT the 26-class model: an 'i'/'l' reading of a mark that
+# Thin letters: an 'i' or 'l' is one upright stroke.
+THIN_LETTERS = {'i', 'l'}
+THIN_MAX_WIDTH = 0.60               # width / height of an i or l at most
+# Shape check: an 'i'/'l' reading of a mark that
 # is far too wide for one stroke, read unsurely, is not a letter we know
 # (a Z read as 'l' 33%). A capital L is wide too but is read surely.
 WIDE_THIN_READER_BELOW = 0.50
@@ -1863,7 +1762,7 @@ def wide_thin_letter(glyph, letter, prob):
     """True = an 'i'/'l' reading that cannot be an i or l:
     - its middle part is a steep diagonal (a Z), or
     - it is much too wide for one stroke and read unsurely."""
-    if letter not in VETO_THIN_LETTERS:
+    if letter not in THIN_LETTERS:
         return False
     gh, gw = glyph.shape[:2]
     if gh <= 0:
@@ -1873,41 +1772,162 @@ def wide_thin_letter(glyph, letter, prob):
         return True
     if is_z_shape(glyph):                    # a Z read as i/l, at any percentage
         return True
-    return prob < WIDE_THIN_READER_BELOW and gw > VETO_THIN_MAX_WIDTH * gh
+    return prob < WIDE_THIN_READER_BELOW and gw > THIN_MAX_WIDTH * gh
 
 
-def veto_unsupported(glyph_masks, veto=None, reader=None):
-    """[True/False] per letter: True = the 26-class model is sure it is
-    c f j q v x z. reader = the 19-class reader's (letter, prob) per glyph
-    (optional). Never raises (any error = no veto)."""
-    veto = veto if veto is not None else _VETO
-    if not veto or not glyph_masks:
-        return [False] * len(glyph_masks)
+# ---------------------------------------------------------------------
+# UNSUPPORTED LETTERS BY SHAPE (19-class model only, no second model)
+# ---------------------------------------------------------------------
+# The 19-class model has no class for c f j q v x z, so it reads them as
+# the closest supported letter. Four of them have a shape that the
+# supported letters they are mistaken for do not have, so a few shape
+# rules can catch them after reading. Each rule only looks at the letters
+# that the unsupported letter is usually read as, so normal letters are
+# not checked at all. f, q and v look too much like t, g and u to separate
+# by shape and are left to Scope and Limitations.
+#   c - read as e or o: the right side is OPEN in the middle (an e has its
+#       bar there, an o is closed)
+#   x - any reading: two crossing diagonals = ink in all four corners and
+#       in the centre, none in the middle of the four sides (k has a stem
+#       on the left, y has no stroke in the bottom-right corner)
+#   z - any reading: top bar sticking out to the LEFT, bottom bar to the
+#       RIGHT of the diagonal (is_z_shape; before only for i/l readings)
+#   j - read as i or l: the bottom hooks to the LEFT of the stem (an l
+#       ends straight or turns right, an L turns right)
+# Every rule can be switched off on its own.
+CATCH_UNSUPPORTED = {'c': True, 'x': True, 'z': True, 'j': True}
+C_READ_AS = {'e', 'o'}
+J_READ_AS = {'i', 'l'}
+C_OPEN_RIGHT = 0.55       # middle rows: no ink right of this share of the width
+C_OPEN_ROWS = 0.80        # ... in at least this share of the middle rows
+C_ARM_REACH = 0.70        # top AND bottom arms reach at least this far right
+X_CORNER = 0.30           # corner / side boxes are this share of the size
+X_MIN_ASPECT = 0.55       # an x is not a thin stroke: width >= this x height
+X_SIDE_LR = 0.15          # most ink in the left / right middle (x the mean ink)
+X_SIDE_TB = 0.60          # most ink in the top / bottom middle
+J_HOOK_LEFT = 0.18        # bottom reaches this far (x height) left of the stem
+J_RIGHT_MAX = 0.10        # ... and at most this far right of it
+
+
+DESLANT_MAX = 0.6         # most slant removed (sideways move per row)
+
+
+def _deslant(glyph):
+    """Makes slanted handwriting upright (shear by the ink's own slant), so
+    the shape rules see the same letter for upright and slanted writing."""
+    g = (glyph > 0).astype(np.uint8) * 255
+    m = cv2.moments(g, binaryImage=True)
+    if m['mu02'] <= 1e-6:
+        return g
+    skew = float(np.clip(m['mu11'] / m['mu02'], -DESLANT_MAX, DESLANT_MAX))
+    if abs(skew) < 0.03:
+        return g
+    h, w = g.shape
+    cy = m['m01'] / m['m00']
+    pad = int(np.ceil(abs(skew) * h)) + 2
+    M = np.float32([[1, -skew, skew * cy + pad], [0, 1, 0]])
+    out = cv2.warpAffine(g, M, (w + 2 * pad, h), flags=cv2.INTER_NEAREST, borderValue=0)
+    ys, xs = np.nonzero(out)
+    return out[ys.min():ys.max() + 1, xs.min():xs.max() + 1] if xs.size else g
+
+
+def _box_ink(g, y0, y1, x0, x1):
+    h, w = g.shape
+    sub = g[int(y0 * h):max(int(y0 * h) + 1, int(y1 * h)),
+            int(x0 * w):max(int(x0 * w) + 1, int(x1 * w))]
+    return float(sub.mean()) if sub.size else 0.0
+
+
+def is_c_shape(glyph):
+    g = glyph > 0
+    h, w = g.shape
+    if h < 10 or w < 6:
+        return False
+    rows = range(int(0.40 * h), int(0.60 * h) + 1)
+    open_rows = 0
+    for r in rows:
+        cols = np.flatnonzero(g[min(r, h - 1)])
+        if cols.size and cols.max() < C_OPEN_RIGHT * w:
+            open_rows += 1
+    if open_rows < C_OPEN_ROWS * len(rows):
+        return False
+    top = np.flatnonzero(g[:max(1, int(0.30 * h))].any(axis=0))
+    bot = np.flatnonzero(g[int(0.70 * h):].any(axis=0))
+    if not top.size or not bot.size:
+        return False
+    return top.max() >= C_ARM_REACH * w and bot.max() >= C_ARM_REACH * w
+
+
+def is_x_shape(glyph):
+    g = (glyph > 0).astype(np.float32)
+    h, w = g.shape
+    if h < 10 or w < X_MIN_ASPECT * h:
+        return False
+    k = X_CORNER
+    corners = [_box_ink(g, 0, k, 0, k), _box_ink(g, 0, k, 1 - k, 1),
+               _box_ink(g, 1 - k, 1, 0, k), _box_ink(g, 1 - k, 1, 1 - k, 1)]
+    centre = _box_ink(g, 0.5 - k / 2, 0.5 + k / 2, 0.5 - k / 2, 0.5 + k / 2)
+    sides = [_box_ink(g, 0.5 - k / 2, 0.5 + k / 2, 0, k / 1.5),          # left middle
+             _box_ink(g, 0.5 - k / 2, 0.5 + k / 2, 1 - k / 1.5, 1),      # right middle
+             _box_ink(g, 0, k / 1.5, 0.5 - k / 2, 0.5 + k / 2),          # top middle
+             _box_ink(g, 1 - k / 1.5, 1, 0.5 - k / 2, 0.5 + k / 2)]      # bottom middle
+    ref = float(g.mean())
+    if ref <= 0:
+        return False
+    # left / right middle: empty (k, h, n, m, w have a stroke there);
+    # top / bottom middle: little ink (a bold x nearly closes its V there,
+    # a t or y has a full stroke there)
+    return (min(corners) >= 0.5 * ref and centre >= 0.8 * ref
+            and max(sides[:2]) <= X_SIDE_LR * ref and max(sides[2:]) <= X_SIDE_TB * ref)
+
+
+def is_j_shape(glyph):
+    """The stem is followed down (a line through its centre in the middle
+    rows, so slanted writing is handled) and the bottom is compared with
+    where the stem would be: a j / J curls clearly to the LEFT of it."""
+    g = glyph > 0
+    h, w = g.shape
+    if h < 12:
+        return False
+    rows = [r for r in range(int(0.25 * h), int(0.65 * h)) if g[r].any()]
+    if len(rows) < 4:
+        return False
+    centres = [np.flatnonzero(g[r]).mean() for r in rows]
+    slope, icpt = np.polyfit(rows, centres, 1)
+    lo = int(0.80 * h)
+    left_out = right_out = 0.0
+    for r in range(lo, h):
+        cols = np.flatnonzero(g[r])
+        if not cols.size:
+            continue
+        stem = slope * r + icpt
+        left_out = max(left_out, stem - cols.min())
+        right_out = max(right_out, cols.max() - stem)
+    return left_out >= J_HOOK_LEFT * h and right_out <= J_RIGHT_MAX * h + 0.5 * _stroke_w(g)
+
+
+def _stroke_w(g):
+    return float(np.median(g.sum(axis=1)[g.any(axis=1)]))
+
+
+def unsupported_shape(glyph, letter):
+    """Name of the unsupported letter (c, x, z, j) whose shape this mark has,
+    or None. letter = what the 19-class model read it as. Never raises."""
     try:
-        feats = np.vstack([latin_features(g) for g in glyph_masks])
-        probs = veto['model'].predict_proba(feats)[:, veto['cols']]
-        p_un = probs.sum(axis=1)
-        flags = [bool(v >= veto['threshold']) for v in p_un]
-        if reader and len(reader) == len(flags):
-            for k, (letter, p) in enumerate(reader):
-                if flags[k] or p_un[k] < VETO_SOFT_LIMIT:
-                    continue
-                gh, gw = glyph_masks[k].shape[:2]
-                too_wide = letter in VETO_THIN_LETTERS and gh > 0 and gw > VETO_THIN_MAX_WIDTH * gh
-                if p < VETO_SOFT_READER_BELOW or too_wide:
-                    flags[k] = True
-        names = veto.get('names')
-        if reader and names and len(reader) == len(flags):
-            for k, flag in enumerate(flags):
-                if not flag:
-                    continue
-                unsup = names[int(np.argmax(probs[k]))]
-                letter, p = reader[k]
-                if letter in VETO_LOOKALIKES.get(unsup, ()) and p >= VETO_LOOKALIKE_TRUST:
-                    flags[k] = False
-        return flags
+        upright = _deslant(glyph)
+        if CATCH_UNSUPPORTED.get('x') and is_x_shape(upright):
+            return 'x'
+        if CATCH_UNSUPPORTED.get('z') and is_z_shape(glyph):
+            return 'z'
+        if CATCH_UNSUPPORTED.get('c') and letter in C_READ_AS and is_c_shape(upright):
+            return 'c'
+        if CATCH_UNSUPPORTED.get('j') and letter in J_READ_AS and is_j_shape(glyph):
+            return 'j'
     except Exception:
-        return [False] * len(glyph_masks)
+        return None
+    return None
+
+
 PAGE_REJECT_FRACTION = 0.5     # this share of letters rejected -> no Latin on the photo
 UNKNOWN_MARK = '?'
 # What happens to a rejected letter:
@@ -2145,7 +2165,7 @@ def latin_text_to_baybayin(text):
 # MAIN ENTRY: photo -> Latin letters -> Baybayin
 # =====================================================================
 def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=None,
-                                 word_set=None, debug=False):
+                                 word_set=None, debug=False, input_type='pen'):
     latin_model = latin_model or _LATIN_MODEL
     latin_classes = latin_classes or _LATIN_CLASSES
     word_set = word_set if word_set is not None else _WORD_SET
@@ -2177,9 +2197,19 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
     if blur_score < BLUR_VARIANCE_THRESHOLD:
         return result('blurry', BLURRY_IMAGE_MESSAGE, raw_w, raw_h)
 
-    # ---- same enhancement / normalization / Otsu / deskew ----
+    # ---- enhancement (pen only) / normalization / Otsu / deskew ----
+    # Same rule as the Baybayin side: the writing instrument chosen on the
+    # camera decides the enhancement. Pen strokes are thin and often faint,
+    # so they are denoised, contrast-adjusted and sharpened; marker strokes
+    # are thick and dark and rely on illumination normalization + Otsu.
     raw_gray = image                                   # before enhancement
-    image = enhance_image_quality(image)
+    is_marker = str(input_type).strip().lower() == 'marker'
+    if debug:
+        print(f"  [latin debug] input_type={'marker' if is_marker else 'pen'}")
+    if is_marker:
+        image = upscale_if_small(image)
+    else:
+        image = enhance_image_quality(image)
     img_h, img_w = image.shape[:2]
     blur_size = min(101, max(15, (min(image.shape) // 3) | 1))
     background = cv2.GaussianBlur(image, (blur_size, blur_size), 0)
@@ -2334,13 +2364,13 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
             if len(latin_word) == len(letter_dets):
                 rejected = [r or wide_thin_letter(g, ch, c[0][1]) for r, g, ch, c
                             in zip(rejected, letter_glyphs, latin_word, cands_per_letter)]
-            # two-model veto: the 26-class model is sure it is c f j q v x z
-            if (_VETO and len(latin_word) == len(letter_dets)
-                    and not is_trusted_word(latin_word, word_set,
-                                            [c[0][1] for c in cands_per_letter])):
-                reader = [(ch, c[0][1]) for ch, c in zip(latin_word, cands_per_letter)]
-                rejected = [r or v for r, v in zip(rejected, veto_unsupported(letter_glyphs,
-                                                                              reader=reader))]
+                # c / x / z / j written by the user: no Baybayin equivalent,
+                # caught by shape (19-class model only) and removed
+                shapes = [unsupported_shape(g, ch) for g, ch in zip(letter_glyphs, latin_word)]
+                if debug and any(shapes):
+                    print(f"  [latin debug] unsupported by shape: "
+                          f"{[(ch, sh) for ch, sh in zip(latin_word, shapes) if sh]}")
+                rejected = [r or bool(sh) for r, sh in zip(rejected, shapes)]
             letters_total += len(letter_dets)
             if any(rejected) and REJECT_MODE == 'drop':
                 # unknown letters are removed: no prediction, no box
@@ -2470,10 +2500,6 @@ def warm_up_latin(word_set=None):
         else:                               # PC testing with the .pkl files
             load_latin_model(os.path.join(MODULE_DIR, 'model_latin.pkl'),
                              os.path.join(MODULE_DIR, 'latin_metadata.pkl'))
-        # optional: the two-model veto (26-class model + measured limit)
-        for folder in (os.path.join(MODULE_DIR, 'models'), MODULE_DIR):
-            if load_veto(folder):
-                break
         # optional: the measured limit for rejecting unknown letters
         for folder in (os.path.join(MODULE_DIR, 'models'), MODULE_DIR):
             cfg = os.path.join(folder, 'latin_reject.json')
@@ -2491,15 +2517,18 @@ def warm_up_latin(word_set=None):
     return 'ok'
 
 
-def recognize_latin_json(image_bytes, debug=False):
+def recognize_latin_json(image_bytes, input_type='pen', debug=False):
     """Easiest call from Kotlin/Chaquopy: bytes in, JSON string out.
+    input_type is 'pen' or 'marker' (the camera's choice); anything else
+    is treated as pen.
     Never raises - errors come back as {"error": "..."} so the Dart side
     (OfflineRecognizer._decode) turns them into null."""
     try:
         if not isinstance(image_bytes, (bytes, bytearray)):
             image_bytes = bytes(image_bytes)          # Java byte[] -> bytes
         warm_up_latin()
-        return json.dumps(preprocess_and_predict_latin(image_bytes, debug=debug),
+        return json.dumps(preprocess_and_predict_latin(image_bytes, debug=debug,
+                                                       input_type=input_type),
                           ensure_ascii=False)
     except Exception as e:  # noqa: BLE001 - reported to the app, not raised
         return json.dumps({'error': f'{type(e).__name__}: {e}'})

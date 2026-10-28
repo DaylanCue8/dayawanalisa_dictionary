@@ -132,10 +132,11 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
       MaterialPageRoute(builder: (_) => ImageCropperScreen(imageData: bytes)),
     );
     if (cropped == null || !mounted) return;
-    await _process(cropped);
+    await _process(cropped, inputType: captured.inputType);
   }
 
-  Future<void> _process(Uint8List bytes) async {
+  /// [inputType] is the camera's Pen | Marker choice ('pen' or 'marker').
+  Future<void> _process(Uint8List bytes, {String inputType = 'pen'}) async {
     setState(() {
       _image = bytes;
       _isLoading = true;
@@ -144,7 +145,10 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
       _lines = [];
     });
 
-    final response = await OfflineRecognizer.recognizeLatin(bytes);
+    final response = await OfflineRecognizer.recognizeLatin(
+      bytes,
+      inputType: inputType,
+    );
     if (!mounted) return;
 
     final status = response?['status']?.toString();
@@ -270,7 +274,7 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
   static const List<(IconData, String, String)> _tips = [
     (Icons.text_fields, 'Print, not cursive', 'Naka-print, hindi kabit-kabit'),
     (Icons.space_bar, 'Space out letters', 'Paglayuin ang mga titik'),
-    (Icons.edit, 'Black pen', 'Itim na bolpen'),
+    (Icons.edit, 'Pick Pen or Marker', 'Piliin ang Pen o Marker'),
     (Icons.description_outlined, 'Plain white paper', 'Payak na puting papel'),
     (Icons.block, 'No C, F, J, Q, V, X, Z', 'Walang C, F, J, Q, V, X, Z'),
     (Icons.wb_sunny_outlined, 'No glare or shadow', 'Walang silaw o anino'),
@@ -366,11 +370,14 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
 
   Widget _buildHeroHeader() {
     return DayawHeroHeader(
-      title: context.tr('Write the ancient script', 'Isulat ang sinaunang titik'),
+      title: context.tr(
+        'See your handwriting in Baybayin',
+        'Tingnan ang sulat-kamay mo sa Baybayin',
+      ),
       subtitle: context.tr(
-        'Snap handwritten Latin letters and get Baybayin in seconds.',
-        'Kunan ng larawan ang sulat-kamay na titik Latin at makuha ang '
-            'Baybayin sa ilang segundo.',
+        'Scan handwritten Latin letters and see them in Baybayin in seconds.',
+        'I-scan ang sulat-kamay na titik Latin at makita ito sa Baybayin '
+            'sa ilang segundo.',
       ),
       baybayin: 'bahay → ᜊᜑᜌ᜔',
       shimmer: _ambient,
