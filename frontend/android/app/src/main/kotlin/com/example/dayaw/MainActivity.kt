@@ -1,7 +1,11 @@
 package com.example.dayaw
 
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import io.flutter.embedding.android.FlutterActivity
@@ -81,6 +85,54 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // Haptics straight from the vibrator: Flutter's HapticFeedback goes
+        // through the system "touch feedback" setting, which many phones
+        // turn off or ignore, so taps felt like nothing.
+        //   vibrate(kind: "selection"|"light"|"heavy")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dayaw/haptics")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "vibrate") {
+                    vibrate(call.argument<String>("kind") ?: "light")
+                    result.success(null)
+                } else {
+                    result.notImplemented()
+                }
+            }
+    }
+
+    private fun vibrate(kind: String) {
+        val vibrator: Vibrator? =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                (getSystemService(VIBRATOR_MANAGER_SERVICE) as? VibratorManager)
+                    ?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(VIBRATOR_SERVICE) as? Vibrator
+            }
+        if (vibrator == null || !vibrator.hasVibrator()) return
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                val effect = when (kind) {
+                    "selection" -> VibrationEffect.EFFECT_TICK
+                    "heavy" -> VibrationEffect.EFFECT_HEAVY_CLICK
+                    else -> VibrationEffect.EFFECT_CLICK
+                }
+                vibrator.vibrate(VibrationEffect.createPredefined(effect))
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O -> {
+                val (ms, amplitude) = when (kind) {
+                    "selection" -> 12L to 90
+                    "heavy" -> 40L to 255
+                    else -> 20L to 160
+                }
+                vibrator.vibrate(VibrationEffect.createOneShot(ms, amplitude))
+            }
+            else -> {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(if (kind == "heavy") 40L else 15L)
+            }
+        }
     }
 
     private fun runPython(

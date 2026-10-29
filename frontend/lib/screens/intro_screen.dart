@@ -6,9 +6,9 @@ import 'package:flutter/services.dart';
 import '../services/app_language.dart';
 import 'legal_screen.dart';
 import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../services/tagalog_to_baybayin_local_translator.dart';
 import '../widgets/dayaw_style.dart';
-import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
 import 'dayaw_landing_screen.dart';
 
@@ -34,15 +34,14 @@ class IntroScreen extends StatefulWidget {
 class _IntroScreenState extends State<IntroScreen>
     with TickerProviderStateMixin {
   static const _pageCount = 4;
-  static const _yellow = Color(0xFFFFE000);
-  static const _amber = Color(0xFFFFB300);
-  static const _gold = Color(0xFFFFFF00);
-  static const _deepBrown = Color(0xFF4E342E);
+  static Color get _yellow => DayawColors.sun;
+  static Color get _amber => DayawColors.amber;
+  static Color get _deepBrown => DayawColors.text;
 
   final PageController _pages = PageController();
   double _page = 0;
 
-  /// Slow loop for the background blobs.
+  /// Slow loop for the background sun.
   late final AnimationController _drift = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 14),
@@ -98,7 +97,7 @@ class _IntroScreenState extends State<IntroScreen>
   }
 
   void _next() {
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.lightImpact();
+    Haptics.light();
     if (_page.round() >= _pageCount - 1) {
       _finish();
     } else {
@@ -113,7 +112,7 @@ class _IntroScreenState extends State<IntroScreen>
   Widget build(BuildContext context) {
     final isLast = _page.round() == _pageCount - 1;
     return Scaffold(
-      backgroundColor: const Color(0xFFFFF8EE),
+      backgroundColor: DayawColors.bg,
       body: Stack(
         children: [
           Positioned.fill(child: _buildDriftingBackground()),
@@ -132,7 +131,7 @@ class _IntroScreenState extends State<IntroScreen>
                         onPressed: isLast ? null : _finish,
                         child: Text(
                           context.tr('Skip', 'Laktawan'),
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: _deepBrown,
                             fontWeight: FontWeight.w700,
                           ),
@@ -183,80 +182,10 @@ class _IntroScreenState extends State<IntroScreen>
   // Background
   // ---------------------------------------------------------------------
 
+  /// The plain ground behind the pages.
   Widget _buildDriftingBackground() {
-    switch (DayawTheme.of(context)) {
-      case DayawTheme.bold:
-        return const ColoredBox(color: DayawColors.paper);
-      case DayawTheme.embroidery:
-        return const LinenBackground(
-          color: DayawColors.paper,
-          child: SizedBox.expand(),
-        );
-      case DayawTheme.gradient:
-        break;
-    }
-    return AnimatedBuilder(
-      animation: _drift,
-      builder: (context, _) {
-        final t = _drift.value * 2 * math.pi;
-        return Stack(
-          children: [
-            const Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xFFFFF8EE),
-                      Color(0xFFFFF1CC),
-                      Color(0xFFF6E7D4),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            _blob(
-              Alignment(-0.9 + 0.3 * math.sin(t), -0.8 + 0.2 * math.cos(t)),
-              300,
-              _yellow.withValues(alpha: 0.55),
-            ),
-            _blob(
-              Alignment(
-                0.9 + 0.2 * math.cos(t * 1.3),
-                -0.1 + 0.3 * math.sin(t),
-              ),
-              280,
-              _amber.withValues(alpha: 0.45),
-            ),
-            _blob(
-              Alignment(-0.5 + 0.4 * math.cos(t), 0.9 + 0.1 * math.sin(t * 2)),
-              320,
-              const Color(0xFFA1887F).withValues(alpha: 0.35),
-            ),
-            _blob(
-              Alignment(0.6 + 0.3 * math.sin(t * 0.7), 0.7),
-              200,
-              _gold.withValues(alpha: 0.45),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _blob(Alignment alignment, double size, Color color) {
-    return Align(
-      alignment: alignment,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(colors: [color, color.withValues(alpha: 0)]),
-        ),
-      ),
-    );
+    DayawTheme.of(context);
+    return ColoredBox(color: DayawColors.bg);
   }
 
   // ---------------------------------------------------------------------
@@ -283,7 +212,7 @@ class _IntroScreenState extends State<IntroScreen>
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 26,
                   fontWeight: FontWeight.w900,
                   color: _deepBrown,
@@ -294,9 +223,9 @@ class _IntroScreenState extends State<IntroScreen>
               Text(
                 body,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 15,
-                  color: Colors.black54,
+                  color: DayawColors.textMuted,
                   height: 1.45,
                 ),
               ),
@@ -348,18 +277,7 @@ class _IntroScreenState extends State<IntroScreen>
                           height: 3,
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(2),
-                            color: _amber,
-                            gradient: themedGradient(
-                              const LinearGradient(
-                                colors: [_amber, _yellow, _gold],
-                              ),
-                            ),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Color(0x88FFC400),
-                                blurRadius: 8,
-                              ),
-                            ],
+                            color: _yellow,
                           ),
                         ),
                       ),
@@ -371,22 +289,12 @@ class _IntroScreenState extends State<IntroScreen>
                         offset: Offset(0, 12 * (1 - afterglow)),
                         child: Column(
                           children: [
-                            const Text(
-                              'ᜇᜌᜏ᜔',
-                              style: TextStyle(
-                                fontFamily: 'BaybayinCustom',
-                                fontSize: 30,
-                                color: Color(0xFFC77800),
-                                letterSpacing: 4,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
                             Text(
                               context.tr(
                                 'Pride in our own script.',
                                 'Dangal sa sarili nating panitik.',
                               ),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w600,
                                 color: _deepBrown,
@@ -398,9 +306,9 @@ class _IntroScreenState extends State<IntroScreen>
                                 'Read and write Baybayin, anywhere.',
                                 'Magbasa at magsulat ng Baybayin, saanman.',
                               ),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 13,
-                                color: Colors.black54,
+                                color: DayawColors.textMuted,
                               ),
                             ),
                           ],
@@ -488,7 +396,7 @@ class _IntroScreenState extends State<IntroScreen>
                       fontFamily: showLatin ? null : 'BaybayinCustom',
                       fontSize: showLatin ? 64 : 84,
                       fontWeight: showLatin ? FontWeight.w900 : null,
-                      color: showLatin ? const Color(0xFFC77800) : _deepBrown,
+                      color: showLatin ? _amber : _deepBrown,
                     ),
                   ),
                 ),
@@ -500,18 +408,18 @@ class _IntroScreenState extends State<IntroScreen>
                       height: 3,
                       margin: const EdgeInsets.symmetric(horizontal: 30),
                       decoration: BoxDecoration(
-                        color: _yellow,
-                        gradient: themedGradient(
-                          const LinearGradient(
-                            colors: [
-                              Color(0x00FFE000),
-                              _yellow,
-                              Color(0x00FFE000),
-                            ],
-                          ),
+                        gradient: LinearGradient(
+                          colors: [
+                            _yellow.withValues(alpha: 0),
+                            _yellow,
+                            _yellow.withValues(alpha: 0),
+                          ],
                         ),
-                        boxShadow: const [
-                          BoxShadow(color: Color(0xAAFFE000), blurRadius: 12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: _yellow.withValues(alpha: 0.5),
+                            blurRadius: 10,
+                          ),
                         ],
                       ),
                     ),
@@ -562,11 +470,11 @@ class _IntroScreenState extends State<IntroScreen>
                 children: [
                   Text(
                     'FILIPINO',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
                       letterSpacing: 1.2,
                       fontWeight: FontWeight.w800,
-                      color: Colors.black45,
+                      color: DayawColors.textMuted,
                     ),
                   ),
                   const SizedBox(height: 6),
@@ -585,7 +493,7 @@ class _IntroScreenState extends State<IntroScreen>
                         ],
                       ),
                       maxLines: 1,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 24,
                         fontWeight: FontWeight.w700,
                         color: _deepBrown,
@@ -602,8 +510,8 @@ class _IntroScreenState extends State<IntroScreen>
                           color: _amber.withValues(alpha: 0.5),
                         ),
                       ),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 8),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
                         child: Icon(
                           Icons.south_rounded,
                           color: _amber,
@@ -619,13 +527,13 @@ class _IntroScreenState extends State<IntroScreen>
                     ],
                   ),
                   const SizedBox(height: 14),
-                  const Text(
+                  Text(
                     'BAYBAYIN',
                     style: TextStyle(
                       fontSize: 11,
                       letterSpacing: 1.2,
                       fontWeight: FontWeight.w800,
-                      color: Colors.black45,
+                      color: DayawColors.textMuted,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -633,10 +541,10 @@ class _IntroScreenState extends State<IntroScreen>
                     Text(
                       baybayin.toString(),
                       maxLines: 1,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'BaybayinCustom',
                         fontSize: 30,
-                        color: Color(0xFFC77800),
+                        color: _amber,
                         letterSpacing: 3,
                       ),
                     ),
@@ -729,31 +637,18 @@ class _IntroScreenState extends State<IntroScreen>
         Container(
           width: 64,
           height: 64,
+          // Raised yellow disc whose shadows breathe with the pulse.
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: _yellow,
-            gradient: themedGradient(
-              const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [_gold, _yellow, _amber],
-              ),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(
-                  0xFFFFC400,
-                ).withValues(alpha: 0.3 + 0.35 * pulse),
-                blurRadius: 12 + 12 * pulse,
-              ),
-            ],
+            boxShadow: neuShadows(depth: 0.5 + 0.3 * pulse),
           ),
-          child: Icon(icon, color: _deepBrown, size: 30),
+          child: Icon(icon, color: DayawColors.onSun, size: 30),
         ),
         const SizedBox(height: 10),
         Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontWeight: FontWeight.w800,
             color: _deepBrown,
           ),
@@ -773,15 +668,16 @@ class _IntroScreenState extends State<IntroScreen>
       onTap: () => LegalScreen.open(context, document),
       child: Text(
         document.title(context),
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 12.5,
           fontWeight: FontWeight.w800,
           color: _deepBrown,
           decoration: TextDecoration.underline,
+          decorationColor: _amber,
         ),
       ),
     );
-    const plain = TextStyle(fontSize: 12.5, color: Colors.black54);
+    final plain = TextStyle(fontSize: 12.5, color: DayawColors.textMuted);
     return Padding(
       padding: const EdgeInsets.fromLTRB(28, 4, 28, 0),
       child: Wrap(
@@ -826,8 +722,8 @@ class _IntroScreenState extends State<IntroScreen>
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(4),
                           color: Color.lerp(
-                            _deepBrown.withValues(alpha: 0.2),
-                            _amber,
+                            DayawColors.line,
+                            _yellow,
                             closeness,
                           ),
                         ),
@@ -845,17 +741,7 @@ class _IntroScreenState extends State<IntroScreen>
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(29),
                 color: _yellow,
-                gradient: themedGradient(
-                  const LinearGradient(colors: [_amber, _yellow, _gold]),
-                ),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.7)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x66FFC400),
-                    blurRadius: 18,
-                    offset: Offset(0, 8),
-                  ),
-                ],
+                boxShadow: neuShadows(depth: 0.8),
               ),
               child: Material(
                 color: Colors.transparent,
@@ -871,14 +757,14 @@ class _IntroScreenState extends State<IntroScreen>
                               softWrap: false,
                               overflow: TextOverflow.clip,
                               style: const TextStyle(
-                                color: _deepBrown,
+                                color: DayawColors.onSun,
                                 fontSize: 17,
                                 fontWeight: FontWeight.w900,
                               ),
                             )
                           : const Icon(
                               Icons.arrow_forward_rounded,
-                              color: _deepBrown,
+                              color: DayawColors.onSun,
                             ),
                     ),
                   ),
@@ -907,34 +793,19 @@ class _HandwrittenWord extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const style = TextStyle(
+    DayawTheme.of(context);
+    final style = TextStyle(
       fontFamily: 'GreatVibes',
       fontSize: 96,
       height: 1.15,
-      color: Colors.white,
+      color: DayawColors.text,
     );
     return Stack(
       clipBehavior: Clip.none,
       children: [
         ClipRect(
           clipper: _RevealClipper(progress),
-          child: DayawTheme.of(context) == DayawTheme.gradient
-              ? ShaderMask(
-                  shaderCallback: (bounds) => const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xFF4E342E),
-                      Color(0xFF8D4A2B),
-                      Color(0xFFC77800),
-                    ],
-                  ).createShader(bounds),
-                  child: Text(text, style: style),
-                )
-              : Text(
-                  text,
-                  style: style.copyWith(color: const Color(0xFF4E342E)),
-                ),
+          child: Text(text, style: style),
         ),
         if (penVisible)
           Positioned.fill(
@@ -947,14 +818,14 @@ class _HandwrittenWord extends StatelessWidget {
               child: Container(
                 width: 12,
                 height: 12,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Color(0xFFFFFF00),
+                  color: DayawColors.sun,
                   boxShadow: [
                     BoxShadow(
-                      color: Color(0xCCFFC400),
-                      blurRadius: 16,
-                      spreadRadius: 4,
+                      color: DayawColors.sun.withValues(alpha: 0.6),
+                      blurRadius: 12,
+                      spreadRadius: 2,
                     ),
                   ],
                 ),
@@ -989,7 +860,7 @@ class _ViewfinderCorner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const side = BorderSide(color: Color(0xFFFFB300), width: 4);
+    final side = BorderSide(color: DayawColors.amber, width: 4);
     return SizedBox(
       width: 28,
       height: 28,

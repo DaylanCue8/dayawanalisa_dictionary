@@ -2,19 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/app_language.dart';
 import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../widgets/dayaw_style.dart';
-import 'baybayin_to_tagalog_view.dart';
-import 'latin_to_baybayin_view.dart';
 import 'settings_screen.dart';
+import 'translate_view.dart';
 import '../widgets/glass.dart';
 import '../widgets/liquid_glass_selector.dart';
 
-/// Top-level shell: header, mode dropdown, and swaps between the two
-/// self-contained mode widgets. Each mode now owns its own state — since
-/// BaybayinToTagalogView and TagalogToBaybayinView are different widget
-/// types, Flutter disposes the old one and creates a fresh instance of
-/// the new one whenever the mode changes, so switching modes resets that
-/// mode's state automatically (no manual clearing needed here anymore).
+/// Top-level shell: header and two destinations - Recognize (both
+/// translators on one page, see [TranslateView]) and Settings.
 class DayawLandingScreen extends StatefulWidget {
   const DayawLandingScreen({super.key});
 
@@ -23,7 +19,7 @@ class DayawLandingScreen extends StatefulWidget {
 }
 
 class _DayawLandingScreenState extends State<DayawLandingScreen> {
-  int selectedDestination = 1;
+  int selectedDestination = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -36,9 +32,9 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
           bottom: false,
           child: Column(
             children: [
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               _buildHeader(),
-              const SizedBox(height: 20),
+              const SizedBox(height: 14),
               Expanded(
                 // Cross-fade + slight rise when switching tabs.
                 child: AnimatedSwitcher(
@@ -60,7 +56,7 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
                     child: Padding(
                       // Keeps content clear of the floating nav bar.
                       padding: EdgeInsets.only(
-                        bottom: 80 + MediaQuery.of(context).padding.bottom,
+                        bottom: 72 + MediaQuery.of(context).padding.bottom,
                       ),
                       child: _buildSelectedDestination(),
                     ),
@@ -71,20 +67,20 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
           ),
         ),
       ),
-      // Floating frosted capsule, like the iOS tab bar. Tap a tab, or
-      // long-press / drag the yellow pill across the tabs.
+      // Floating capsule with two tabs. Tap a tab, or long-press / drag
+      // the yellow pill across them.
       bottomNavigationBar: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          padding: const EdgeInsets.fromLTRB(48, 0, 48, 10),
           child: GlassContainer(
-            padding: const EdgeInsets.all(5),
-            borderRadius: const BorderRadius.all(Radius.circular(32)),
+            padding: const EdgeInsets.all(4),
+            borderRadius: const BorderRadius.all(Radius.circular(28)),
             child: LiquidGlassSelector(
               count: _destinations.length,
               selectedIndex: selectedDestination,
-              height: 58,
-              pillRadius: const BorderRadius.all(Radius.circular(27)),
+              height: 48,
+              pillRadius: const BorderRadius.all(Radius.circular(24)),
               onChanged: (index) {
                 setState(() {
                   selectedDestination = index;
@@ -93,30 +89,33 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
               itemBuilder: (context, index, selectedness) {
                 final (icon, selectedIcon, en, fil) = _destinations[index];
                 final label = context.tr(en, fil);
+                // Muted when idle, charcoal on the yellow pill.
                 final color = Color.lerp(
-                  Colors.brown,
-                  Colors.black87,
+                  DayawColors.textMuted,
+                  DayawColors.onSun,
                   selectedness,
                 );
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Column(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
                         selectedness > 0.5 ? selectedIcon : icon,
                         color: color,
-                        size: 22,
+                        size: 19,
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: color,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: color,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ],
@@ -133,83 +132,78 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
   // (icon, selected icon, English label, Filipino label)
   static const List<(IconData, IconData, String, String)> _destinations = [
     (
-      Icons.translate,
-      Icons.translate,
-      'Latin to Baybayin',
-      'Latin sa Baybayin',
-    ),
-    (
       Icons.document_scanner_outlined,
       Icons.document_scanner,
-      'Baybayin to Latin',
-      'Baybayin sa Latin',
+      'Recognize',
+      'Kilalanin',
     ),
     (Icons.settings_outlined, Icons.settings, 'Settings', 'Mga Setting'),
   ];
 
   Widget _buildSelectedDestination() {
     switch (selectedDestination) {
-      case 0:
-        return const LatinToBaybayinView();
-      case 2:
-        return const SettingsScreen();
       case 1:
+        return const SettingsScreen();
+      case 0:
       default:
-        return const BaybayinToTagalogView();
+        return const TranslateView();
     }
   }
 
-  static const double _capsuleHeight = 54;
+  static const double _capsuleHeight = 44;
   static const BorderRadius _capsuleRadius = BorderRadius.all(
     Radius.circular(_capsuleHeight / 2),
   );
   static const EdgeInsets _capsulePadding = EdgeInsets.symmetric(
-    horizontal: 18,
+    horizontal: 22,
   );
 
   Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      // [language]        [logo]        [theme]
       child: Row(
         children: [
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: _buildHeaderIconButton(
-                icon: Icons.language,
-                tooltip: context.tr('Language', 'Lengwahe'),
-                onTap: _openLanguagePicker,
-              ),
-            ),
+          _buildHeaderIconButton(
+            icon: Icons.language,
+            tooltip: context.tr('Language', 'Lengwahe'),
+            onTap: _openLanguagePicker,
           ),
-          GlassContainer(
+          const Spacer(),
+          // The logo on a raised neumorphic capsule. The artwork has dark
+          // letters, so in dark mode the capsule is dirty white to keep
+          // it readable.
+          Container(
             height: _capsuleHeight,
-            borderRadius: _capsuleRadius,
             padding: _capsulePadding,
+            decoration: neuRaised(
+              borderRadius: _capsuleRadius,
+              depth: 0.5,
+              color: DayawColors.dark ? const Color(0xFFE9E4DA) : null,
+            ),
             child: Center(
               child: Image.asset(
                 'assets/images/dayawlogo.png',
-                height: 42,
-                errorBuilder: (ctx, err, stack) => const Text(
+                height: 28,
+                errorBuilder: (ctx, err, stack) => Text(
                   'DAYAW',
                   style: TextStyle(
-                    fontWeight: FontWeight.bold,
+                    fontWeight: FontWeight.w900,
                     fontSize: 22,
-                    color: Colors.brown,
+                    letterSpacing: 3,
+                    color: DayawColors.charcoal,
                   ),
                 ),
               ),
             ),
           ),
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: _buildHeaderIconButton(
-                icon: Icons.palette_outlined,
-                tooltip: context.tr('Theme', 'Tema'),
-                onTap: _openThemePicker,
-              ),
-            ),
+          const Spacer(),
+          _buildHeaderIconButton(
+            icon: DayawColors.dark
+                ? Icons.dark_mode_outlined
+                : Icons.light_mode_outlined,
+            tooltip: context.tr('Theme', 'Tema'),
+            onTap: _openThemePicker,
           ),
         ],
       ),
@@ -221,17 +215,20 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
     required String tooltip,
     required VoidCallback onTap,
   }) {
-    return Material(
-      color: Colors.transparent,
-      child: Tooltip(
-        message: tooltip,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: _capsuleRadius,
-          child: SizedBox(
-            width: _capsuleHeight,
-            height: _capsuleHeight,
-            child: Icon(icon, color: DayawColors.deepBrown, size: 24),
+    // A raised rounded-square key, like an iOS neumorphic button.
+    const radius = BorderRadius.all(Radius.circular(14));
+    return Container(
+      width: _capsuleHeight,
+      height: _capsuleHeight,
+      decoration: neuRaised(borderRadius: radius, depth: 0.5),
+      child: Material(
+        color: Colors.transparent,
+        child: Tooltip(
+          message: tooltip,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: radius,
+            child: Icon(icon, color: DayawColors.textMuted, size: 21),
           ),
         ),
       ),
@@ -239,7 +236,7 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
   }
 
   Future<void> _openLanguagePicker() async {
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    Haptics.selection();
     final code = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -269,13 +266,13 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
                       height: 38,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
-                        color: DayawColors.deepBrown,
+                        color: DayawColors.charcoal,
                         borderRadius: BorderRadius.circular(11),
                       ),
                       child: Text(
                         code.toUpperCase(),
                         style: const TextStyle(
-                          color: DayawColors.gold,
+                          color: DayawColors.sun,
                           fontWeight: FontWeight.w800,
                           fontSize: 12,
                         ),
@@ -283,13 +280,13 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
                     ),
                     title: Text(
                       name,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w800,
-                        color: DayawColors.deepBrown,
+                        color: DayawColors.text,
                       ),
                     ),
                     trailing: AppSettings.instance.language == code
-                        ? const Icon(
+                        ? Icon(
                             Icons.check_circle,
                             color: DayawColors.amber,
                           )
@@ -306,7 +303,7 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
   }
 
   Future<void> _openThemePicker() async {
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    Haptics.selection();
     final theme = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -322,21 +319,22 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
               children: [
                 DayawSectionTitle(
                   context.tr('Theme', 'Tema'),
-                  Icons.palette_outlined,
+                  Icons.contrast,
                 ),
                 const SizedBox(height: 8),
                 for (final theme in DayawTheme.values)
                   ListTile(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    leading: Icon(_themeIcon(theme), color: DayawColors.amber),
                     title: Text(
                       _themeLabel(context, theme),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w800,
-                        color: DayawColors.deepBrown,
+                        color: DayawColors.text,
                       ),
                     ),
                     trailing: AppSettings.instance.theme == theme.name
-                        ? const Icon(
+                        ? Icon(
                             Icons.check_circle,
                             color: DayawColors.amber,
                           )
@@ -354,12 +352,18 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
 
   String _themeLabel(BuildContext context, DayawTheme theme) {
     switch (theme) {
-      case DayawTheme.gradient:
-        return context.tr('Gradient', 'Gradient');
-      case DayawTheme.bold:
-        return context.tr('Bold', 'Patag');
-      case DayawTheme.embroidery:
-        return context.tr('Embroidery', 'Burda');
+      case DayawTheme.light:
+        return context.tr('Light', 'Maliwanag');
+      case DayawTheme.dark:
+        return context.tr('Dark', 'Madilim');
+      case DayawTheme.system:
+        return context.tr('Match device', 'Ayon sa device');
     }
   }
+
+  IconData _themeIcon(DayawTheme theme) => switch (theme) {
+    DayawTheme.light => Icons.light_mode_outlined,
+    DayawTheme.dark => Icons.dark_mode_outlined,
+    DayawTheme.system => Icons.brightness_auto_outlined,
+  };
 }

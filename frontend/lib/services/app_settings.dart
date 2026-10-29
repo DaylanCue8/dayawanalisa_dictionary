@@ -21,13 +21,13 @@ class AppSettings extends ChangeNotifier {
   static const defaultResultFilter = 'HOG';
   static const defaultMinConfidence = 23.0;
   static const defaultLanguage = 'en';
-  static const defaultTheme = 'gradient';
+  static const defaultTheme = 'system';
 
   /// Accepted values, used to validate loaded and set values.
   static const cameraInputTypes = ['marker', 'pen'];
   static const resultFilters = ['Raw', 'Black and White', 'HOG'];
   static const languages = ['en', 'fil'];
-  static const themes = ['gradient', 'bold', 'embroidery'];
+  static const themes = ['light', 'dark', 'system'];
   static const minConfidenceRange = (min: 0.0, max: 90.0);
 
   SharedPreferences? _prefs;
@@ -38,7 +38,6 @@ class AppSettings extends ChangeNotifier {
   bool _showBoundingBoxesByDefault = false;
   double _minConfidence = defaultMinConfidence;
   bool _hapticsEnabled = true;
-  bool _reduceTransparency = false;
   bool _hasSeenIntro = false;
 
   /// App language: 'en' (English) or 'fil' (Filipino). Kept in its own
@@ -52,7 +51,7 @@ class AppSettings extends ChangeNotifier {
     _update(() {}, 'language', valid);
   }
 
-  /// Visual theme: 'gradient', 'bold' (flat tones) or 'embroidery'. Its
+  /// Visual theme: 'light', 'dark' or 'system' (follow the device). Its
   /// own notifier, like the language, so a switch repaints the look live.
   final ValueNotifier<String> themeNotifier = ValueNotifier(defaultTheme);
   String get theme => themeNotifier.value;
@@ -80,9 +79,6 @@ class AppSettings extends ChangeNotifier {
   double get minConfidence => _minConfidence;
   bool get hapticsEnabled => _hapticsEnabled;
 
-  /// Swaps the frosted glass blur for solid panels: easier to read and
-  /// lighter on slower phones.
-  bool get reduceTransparency => _reduceTransparency;
 
   Future<void> load() async {
     final SharedPreferences prefs;
@@ -110,8 +106,6 @@ class AppSettings extends ChangeNotifier {
         _read(() => prefs.getBool('showBoundingBoxesByDefault')) ?? false;
     _minConfidence = _confidence(_read(() => prefs.getDouble('minConfidence')));
     _hapticsEnabled = _read(() => prefs.getBool('hapticsEnabled')) ?? true;
-    _reduceTransparency =
-        _read(() => prefs.getBool('reduceTransparency')) ?? false;
     _hasSeenIntro = _read(() => prefs.getBool('hasSeenIntro')) ?? false;
     languageNotifier.value = _oneOf(
       _read(() => prefs.getString('language')),
@@ -152,8 +146,6 @@ class AppSettings extends ChangeNotifier {
 
   set hapticsEnabled(bool value) =>
       _update(() => _hapticsEnabled = value, 'hapticsEnabled', value);
-  set reduceTransparency(bool value) =>
-      _update(() => _reduceTransparency = value, 'reduceTransparency', value);
 
   Future<void> resetToDefaults() async {
     _cameraInputType = defaultCameraInputType;
@@ -162,7 +154,6 @@ class AppSettings extends ChangeNotifier {
     _showBoundingBoxesByDefault = false;
     _minConfidence = defaultMinConfidence;
     _hapticsEnabled = true;
-    _reduceTransparency = false;
     themeNotifier.value = defaultTheme;
     notifyListeners();
     try {

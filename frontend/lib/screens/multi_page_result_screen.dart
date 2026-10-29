@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../services/app_language.dart';
-import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../services/recognition_outcome.dart';
 import '../widgets/dayaw_style.dart';
 import '../widgets/glass.dart';
@@ -63,14 +63,14 @@ class MultiPageResultScreen extends StatelessWidget {
       averageConfidence([for (final p in pages) ...p.detections]);
 
   static Color _confidenceColor(double c) {
-    if (c >= 90) return const Color(0xFF5E8B5A);
-    if (c >= 75) return const Color(0xFFC2873F);
+    if (c >= 90) return DayawColors.leaf;
+    if (c >= 75) return DayawColors.amber;
     return DayawColors.brick;
   }
 
   void _copyAll(BuildContext context) {
     Clipboard.setData(ClipboardData(text: combinedText(pages)));
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.lightImpact();
+    Haptics.light();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(tr('Copied all pages', 'Nakopya ang lahat ng pahina')),
@@ -81,7 +81,7 @@ class MultiPageResultScreen extends StatelessWidget {
 
   void _openPage(BuildContext context, ScannedPage page) {
     if (!page.isRead) return;
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    Haptics.selection();
     final data = page.data!;
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -109,7 +109,7 @@ class MultiPageResultScreen extends StatelessWidget {
         ),
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
-        foregroundColor: Colors.brown,
+        foregroundColor: DayawColors.text,
         elevation: 0,
         scrolledUnderElevation: 0,
         flexibleSpace: const GlassBar(child: SizedBox.expand()),
@@ -140,7 +140,7 @@ class MultiPageResultScreen extends StatelessWidget {
                 'Tap a page for its filters, character breakdown and export.',
                 'I-tap ang pahina para sa filter, bawat karakter at pag-export.',
               ),
-              style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+              style: TextStyle(fontSize: 12.5, color: DayawColors.textMuted),
             ),
             const SizedBox(height: 12),
             for (var i = 0; i < pages.length; i++)
@@ -152,7 +152,7 @@ class MultiPageResultScreen extends StatelessWidget {
                 '© 2026 DAYAW. Nakalaan ang lahat ng karapatan.',
               ),
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
+              style: TextStyle(fontSize: 11, color: DayawColors.textMuted),
             ),
           ],
         ),
@@ -183,10 +183,10 @@ class MultiPageResultScreen extends StatelessWidget {
           const SizedBox(height: 12),
           SelectableText(
             text.isEmpty ? '—' : text,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 24,
               fontWeight: FontWeight.w900,
-              color: DayawColors.deepBrown,
+              color: DayawColors.text,
               height: 1.3,
             ),
           ),
@@ -226,8 +226,8 @@ class MultiPageResultScreen extends StatelessWidget {
             child: FilledButton.icon(
               onPressed: text.isEmpty ? null : () => _copyAll(context),
               style: FilledButton.styleFrom(
-                backgroundColor: DayawColors.deepBrown,
-                foregroundColor: DayawColors.yellow,
+                backgroundColor: DayawColors.charcoal,
+                foregroundColor: DayawColors.sun,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
@@ -273,11 +273,11 @@ class MultiPageResultScreen extends StatelessWidget {
                 children: [
                   Text(
                     context.tr('PAGE $number', 'PAHINA $number'),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w900,
                       letterSpacing: 1,
-                      color: DayawColors.softBrown,
+                      color: DayawColors.amber,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -293,7 +293,7 @@ class MultiPageResultScreen extends StatelessWidget {
                     style: TextStyle(
                       fontSize: read ? 17 : 13,
                       fontWeight: read ? FontWeight.w800 : FontWeight.w500,
-                      color: read ? DayawColors.deepBrown : DayawColors.brick,
+                      color: read ? DayawColors.text : DayawColors.brick,
                     ),
                   ),
                   if (read) ...[
@@ -318,7 +318,7 @@ class MultiPageResultScreen extends StatelessWidget {
             if (read)
               Icon(
                 Icons.chevron_right,
-                color: DayawColors.deepBrown.withValues(alpha: 0.4),
+                color: DayawColors.textMuted,
               ),
           ],
         ),
@@ -330,14 +330,8 @@ class MultiPageResultScreen extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: DayawColors.yellow,
-        gradient: themedGradient(
-          const LinearGradient(
-            colors: [DayawColors.gold, DayawColors.yellow, DayawColors.amber],
-          ),
-        ),
+        color: DayawColors.charcoal,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Color(0x33D9A441), blurRadius: 8)],
       ),
       child: Text(
         text,
@@ -345,7 +339,7 @@ class MultiPageResultScreen extends StatelessWidget {
           fontSize: 11,
           fontWeight: FontWeight.w900,
           letterSpacing: 1,
-          color: Colors.black87,
+          color: DayawColors.sun,
         ),
       ),
     );
@@ -389,30 +383,18 @@ class MultiPageResultScreen extends StatelessWidget {
   Widget _statChip(IconData icon, String label) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: DayawColors.yellow.withValues(alpha: 0.45),
-        gradient: themedGradient(
-          LinearGradient(
-            colors: [
-              DayawColors.yellow.withValues(alpha: 0.55),
-              DayawColors.gold.withValues(alpha: 0.35),
-            ],
-          ),
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: DayawColors.amber.withValues(alpha: 0.5)),
-      ),
+      decoration: neuSunken(borderRadius: BorderRadius.circular(20)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: Colors.brown),
+          Icon(icon, size: 14, color: DayawColors.amber),
           const SizedBox(width: 5),
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w600,
-              color: DayawColors.deepBrown,
+              color: DayawColors.text,
             ),
           ),
         ],

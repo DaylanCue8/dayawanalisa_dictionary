@@ -310,7 +310,7 @@ class LegalScreen extends StatelessWidget {
                 'Effective $legalEffectiveDateEn',
                 'Epektibo mula $legalEffectiveDateFil',
               ),
-              style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+              style: TextStyle(fontSize: 12.5, color: DayawColors.textMuted),
             ),
             const SizedBox(height: 14),
             for (final section in document.sections) ...[
@@ -332,10 +332,10 @@ class LegalScreen extends StatelessWidget {
                         padding: const EdgeInsets.only(top: 6),
                         child: Text(
                           paragraph,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 14,
                             height: 1.45,
-                            color: Colors.black87,
+                            color: DayawColors.text,
                           ),
                         ),
                       ),

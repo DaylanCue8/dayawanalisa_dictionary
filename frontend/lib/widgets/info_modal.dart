@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'dayaw_style.dart';
+import 'embroidery.dart';
+
 class InfoModal extends StatelessWidget {
   const InfoModal({super.key});
 
@@ -10,9 +13,9 @@ class InfoModal extends StatelessWidget {
         maxHeight: MediaQuery.of(context).size.height * 0.85,
       ),
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      decoration: BoxDecoration(
+        color: DayawColors.bg,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
       ),
       child: SingleChildScrollView(
         child: Column(
@@ -24,33 +27,36 @@ class InfoModal extends StatelessWidget {
                 width: 50,
                 height: 5,
                 decoration: BoxDecoration(
-                  color: Colors.grey[300],
+                  color: DayawColors.line,
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
             ),
             const SizedBox(height: 20),
 
-            const Text(
+            Text(
               "About Dayaw",
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.brown),
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: DayawColors.text),
             ),
             const SizedBox(height: 10),
-            const Text(
+            Text(
               "Dayaw is a Capstone project from Leyte Normal University (LNU) dedicated to preserving the ancient Filipino script through recognition.",
-              style: TextStyle(fontSize: 15, color: Colors.black87),
+              style: TextStyle(fontSize: 15, color: DayawColors.text),
             ),
 
-            const Divider(height: 40),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: BanigBand(),
+            ),
 
-            const Text(
+            Text(
               "How to Write for Baybayin",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.brown),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: DayawColors.text),
             ),
             const SizedBox(height: 10),
-            const Text(
+            Text(
               "For the SVM + HOG model to recognize your handwriting accurately, please follow these visual guidelines:",
-              style: TextStyle(fontSize: 14, color: Colors.black54),
+              style: TextStyle(fontSize: 14, color: DayawColors.textMuted),
             ),
             const SizedBox(height: 15),
 
@@ -76,16 +82,13 @@ class InfoModal extends StatelessWidget {
             // asset path below with your actual image.
             Container(
               width: double.infinity,
-              decoration: BoxDecoration(
-                color: Colors.brown[50],
-                borderRadius: BorderRadius.circular(15),
-              ),
+              decoration: neuRaised(borderRadius: BorderRadius.circular(15)),
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
-                  const Text(
+                  Text(
                     "Supported Characters",
-                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.brown),
+                    style: TextStyle(fontWeight: FontWeight.bold, color: DayawColors.text),
                   ),
                   const SizedBox(height: 12),
                   ClipRRect(
@@ -102,9 +105,9 @@ class InfoModal extends StatelessWidget {
             ),
 
             const SizedBox(height: 20),
-            const Text(
+            Text(
               "Best Practices:",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: DayawColors.text),
             ),
             const BulletPoint(text: "Use black ink on plain white paper."),
             const BulletPoint(text: "Keep characters separated (no touching or overlapping strokes)."),
@@ -120,8 +123,9 @@ class InfoModal extends StatelessWidget {
               child: ElevatedButton(
                 onPressed: () => Navigator.pop(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.brown,
-                  foregroundColor: Colors.white,
+                  backgroundColor: DayawColors.charcoal,
+                  foregroundColor: DayawColors.sun,
+                  elevation: 0,
                   padding: const EdgeInsets.symmetric(vertical: 15),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
@@ -136,7 +140,7 @@ class InfoModal extends StatelessWidget {
             Center(
               child: Text(
                 "DAYAW - Capstone Project © 2026",
-                style: TextStyle(fontSize: 11, color: Colors.grey[400], letterSpacing: 1.2),
+                style: TextStyle(fontSize: 11, color: DayawColors.textMuted, letterSpacing: 1.2),
               ),
             ),
             const SizedBox(height: 10),
@@ -158,8 +162,8 @@ class BulletPoint extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("• ", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.brown, fontSize: 18)),
-          Expanded(child: Text(text, style: const TextStyle(fontSize: 14, height: 1.4))),
+          Text("◆ ", style: TextStyle(fontWeight: FontWeight.bold, color: DayawColors.amber, fontSize: 12, height: 1.9)),
+          Expanded(child: Text(text, style: TextStyle(fontSize: 14, height: 1.4, color: DayawColors.text))),
         ],
       ),
     );

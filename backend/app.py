@@ -1,5 +1,8 @@
+import json
 import os
+import sys
 import uuid
+from pathlib import Path
 
 import joblib
 import mysql.connector
@@ -20,34 +23,72 @@ CORS(app)
 ttb_translator = TagalogToBaybayin()
 
 # --- 1. AI & ARCHIVE PATH CONFIG ---
-ARCHIVE_ROOT = 'open_archival_dataset'
-TEMP_ROOT = 'temp_crops'
+BACKEND_ROOT = Path(__file__).resolve().parent
+ARCHIVE_ROOT = BACKEND_ROOT / 'open_archival_dataset'
+TEMP_ROOT = BACKEND_ROOT / 'temp_crops'
 
 for folder in [ARCHIVE_ROOT, TEMP_ROOT]:
     os.makedirs(folder, exist_ok=True)
 
-# IMPORTANT: these .pkl files must come from a model trained on the
-# CLEANED dataset (cropped + 12% margin + square-padded). The service
-# modules now frame every crop that way via normalize_for_model, so
-# older models trained on plain-resized images will not match.
+
+def _get_frontend_python_root():
+    return (BACKEND_ROOT.parent / 'frontend' / 'android' / 'app' / 'src' / 'main' / 'python').resolve()
+
+
+def load_model_bundle():
+    """Load the trained SVM bundle from either .pkl artifacts or the exported .npz models."""
+    pkl_base = BACKEND_ROOT / 'model_base.pkl'
+    pkl_dia = BACKEND_ROOT / 'model_dia.pkl'
+    pkl_meta = BACKEND_ROOT / 'model_metadata.pkl'
+
+    if pkl_base.exists() and pkl_dia.exists() and pkl_meta.exists():
+        base_model = joblib.load(pkl_base)
+        dia_model = joblib.load(pkl_dia)
+        model_metadata = joblib.load(pkl_meta)
+        base_classes = model_metadata['base_classes']
+        dia_classes = model_metadata['dia_classes']
+        return base_model, dia_model, base_classes, dia_classes
+
+    frontend_python_root = _get_frontend_python_root()
+    model_dir = frontend_python_root / 'models'
+    classes_path = model_dir / 'classes.json'
+    base_npz = model_dir / 'model_base.npz'
+    dia_npz = model_dir / 'model_dia.npz'
+
+    if not (base_npz.exists() and dia_npz.exists() and classes_path.exists()):
+        raise FileNotFoundError(
+            'Missing model files. Expected backend .pkl files or frontend model bundle under '
+            f'{model_dir}. '
+            'The project is missing the trained Baybayin model files.'
+        )
+
+    sys.path.insert(0, str(frontend_python_root))
+    from offline_svm import OfflineSVC
+
+    with classes_path.open('r', encoding='utf-8') as fh:
+        metadata = json.load(fh)
+
+    base_model = OfflineSVC(str(base_npz))
+    dia_model = OfflineSVC(str(dia_npz))
+    base_classes = metadata['base_classes']
+    dia_classes = metadata['dia_classes']
+    return base_model, dia_model, base_classes, dia_classes
+
+
 try:
-    base_model = joblib.load('model_base.pkl')
-    dia_model = joblib.load('model_dia.pkl')
-    model_metadata = joblib.load('model_metadata.pkl')
-    base_classes = model_metadata['base_classes']
-    dia_classes = model_metadata['dia_classes']
-    print(f"✅ AI System Online. Loaded {len(base_classes)} base and {len(dia_classes)} diacritic classes.")
+    base_model, dia_model, base_classes, dia_classes = load_model_bundle()
+    print(f"AI System Online. Loaded {len(base_classes)} base and {len(dia_classes)} diacritic classes.")
     print(f"   Base classes: {base_classes}")
     print(f"   Diacritic classes: {dia_classes}")
 except Exception as e:
-    print(f"❌ Critical Error: Could not load AI files. {e}")
+    print(f"Critical Error: Could not load AI files. {e}")
     base_model, dia_model, base_classes, dia_classes = None, None, [], []
 
 try:
-    FILIPINO_WORD_SET = load_filipino_word_set('Tagalog_words_74419+.csv')
-    print(f"✅ Filipino dictionary loaded: {len(FILIPINO_WORD_SET)} unique words.")
+    FILIPINO_WORD_SET = load_filipino_word_set(BACKEND_ROOT / 'Tagalog_words_74419+.csv')
+    print(f"Filipino dictionary loaded: {len(FILIPINO_WORD_SET)} unique words.")
 except Exception as e:
-    print(f"❌ Could not load Filipino word list: {e}")
+    print(f"Could not load Filipino word list: {e}")
     FILIPINO_WORD_SET = set()
 
 # --- 2. DATABASE CONFIG ---

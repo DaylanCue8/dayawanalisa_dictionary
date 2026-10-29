@@ -2,13 +2,13 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:gal/gal.dart';
 import 'package:image/image.dart' as img;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../widgets/dayaw_style.dart' show DayawTheme;
 import 'app_language.dart';
 
 /// Formats the Baybayin result screen can export to.
@@ -22,6 +22,9 @@ enum ExportFormat {
   final String extension;
   final String mimeType;
   const ExportFormat(this.label, this.extension, this.mimeType);
+
+  /// JPG/PNG go straight to the phone's Gallery; PDF/TXT use the share sheet.
+  bool get savesToGallery => this == jpg || this == png;
 }
 
 /// One recognized character: its crop (as shown under the current
@@ -80,15 +83,36 @@ class ResultExport {
       translatedText.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
 }
 
-/// Builds the export file and hands it to the system share sheet, where it
-/// can be saved (Files, Drive, Photos) or sent.
+/// Builds the export file. JPG/PNG are saved directly to the phone's
+/// Gallery (album [galleryAlbum]); PDF/TXT are handed to the system share
+/// sheet, where they can be saved (Files, Drive) or sent.
 class ResultExporter {
   ResultExporter._();
+
+  /// Gallery album (Pictures/DAYAW) that JPG/PNG exports are saved into.
+  static const String galleryAlbum = 'DAYAW';
 
   /// Opens the share sheet. Replaceable in tests (no native plugin there).
   @visibleForTesting
   static Future<void> Function(ShareParams params) sharer = (params) =>
       SharePlus.instance.share(params);
+
+  /// Writes image bytes into the Gallery, asking for access first if
+  /// needed. Replaceable in tests (no native plugin there).
+  @visibleForTesting
+  static Future<void> Function(Uint8List bytes, String name) gallerySaver =
+      (bytes, name) async {
+        if (!await Gal.hasAccess(toAlbum: true) &&
+            !await Gal.requestAccess(toAlbum: true)) {
+          throw StateError(
+            tr(
+              'permission to save to the Gallery was denied',
+              'hindi pinayagang mag-save sa Gallery',
+            ),
+          );
+        }
+        await Gal.putImageBytes(bytes, album: galleryAlbum, name: name);
+      };
 
   /// Turns a PDF into pixels (Android's PDF renderer, via printing).
   /// Replaceable in tests.
@@ -119,6 +143,20 @@ class ResultExporter {
     if (widthPt <= 0 || heightPt <= 0) return 100;
     final dpi = 72 * math.sqrt(maxRasterPixels / (widthPt * heightPt));
     return dpi.clamp(60.0, 200.0).toDouble();
+  }
+
+  /// Saves JPG/PNG to the Gallery, or opens the share sheet for PDF/TXT.
+  static Future<void> export(ResultExport data, ExportFormat format) =>
+      format.savesToGallery
+          ? saveToGallery(data, format)
+          : share(data, format);
+
+  static Future<void> saveToGallery(
+    ResultExport data,
+    ExportFormat format,
+  ) async {
+    final bytes = await build(data, format);
+    await gallerySaver(bytes, 'dayaw_${_stamp(data.createdAt)}');
   }
 
   static Future<void> share(ResultExport data, ExportFormat format) async {
@@ -223,22 +261,22 @@ class ResultExporter {
   // -------------------------------------------------------------------
 
   // Same muted-honey palette as the app (see DayawColors).
-  static const _deepBrown = PdfColor.fromInt(0xFF4E342E);
-  static const _softBrown = PdfColor.fromInt(0xFF6D4C41);
+  static const _deepBrown = PdfColor.fromInt(0xFF1E1C19);
+  static const _softBrown = PdfColor.fromInt(0xFF3A3733);
 
   /// The report follows the app's theme at the moment of export.
-  static bool get _gradientTheme => DayawTheme.current == DayawTheme.gradient;
-  static const _amber = PdfColor.fromInt(0xFFD9A441);
-  static const _yellow = PdfColor.fromInt(0xFFEBCB7C);
-  static const _gold = PdfColor.fromInt(0xFFF3E3B3);
-  static const _cream = PdfColor.fromInt(0xFFFFFBF5);
-  static const _card = PdfColor.fromInt(0xFFFFF4DC);
-  static const _muted = PdfColor.fromInt(0xFF8D7B74);
+  static bool get _gradientTheme => false;
+  static const _amber = PdfColor.fromInt(0xFFC99A0E);
+  static const _yellow = PdfColor.fromInt(0xFFF2C230);
+  static const _gold = PdfColor.fromInt(0xFFF7DE8A);
+  static const _cream = PdfColor.fromInt(0xFFF4F0E8);
+  static const _card = PdfColor.fromInt(0xFFF0EBE3);
+  static const _muted = PdfColor.fromInt(0xFF6E685E);
 
   static PdfColor _confidenceColor(double c) {
-    if (c >= 90) return const PdfColor.fromInt(0xFF5E8B5A);
-    if (c >= 75) return const PdfColor.fromInt(0xFFC2873F);
-    return const PdfColor.fromInt(0xFFB35C52);
+    if (c >= 90) return const PdfColor.fromInt(0xFF3E7D3A);
+    if (c >= 75) return const PdfColor.fromInt(0xFFC99A0E);
+    return const PdfColor.fromInt(0xFFB3473C);
   }
 
   static Future<Uint8List> buildPdf(

@@ -47,7 +47,6 @@ void main() {
       expect(s.minConfidence, AppSettings.defaultMinConfidence);
       expect(s.language, 'en');
       expect(s.hapticsEnabled, isTrue);
-      expect(s.reduceTransparency, isFalse);
       expect(s.cameraGridByDefault, isFalse);
       expect(s.showBoundingBoxesByDefault, isFalse);
       expect(s.hasSeenIntro, isFalse);
@@ -60,7 +59,6 @@ void main() {
         'minConfidence': 50.0,
         'language': 'fil',
         'hapticsEnabled': false,
-        'reduceTransparency': true,
         'cameraGridByDefault': true,
         'showBoundingBoxesByDefault': true,
         'hasSeenIntro': true,
@@ -70,7 +68,6 @@ void main() {
       expect(s.minConfidence, 50.0);
       expect(s.language, 'fil');
       expect(s.hapticsEnabled, isFalse);
-      expect(s.reduceTransparency, isTrue);
       expect(s.cameraGridByDefault, isTrue);
       expect(s.showBoundingBoxesByDefault, isTrue);
       expect(s.hasSeenIntro, isTrue);
@@ -112,7 +109,6 @@ void main() {
       s.minConfidence = 40;
       s.language = 'fil';
       s.hapticsEnabled = false;
-      s.reduceTransparency = true;
       s.cameraGridByDefault = true;
       s.showBoundingBoxesByDefault = true;
       s.hasSeenIntro = true;
@@ -122,7 +118,6 @@ void main() {
       expect(prefs.getDouble('minConfidence'), 40);
       expect(prefs.getString('language'), 'fil');
       expect(prefs.getBool('hapticsEnabled'), isFalse);
-      expect(prefs.getBool('reduceTransparency'), isTrue);
       expect(prefs.getBool('cameraGridByDefault'), isTrue);
       expect(prefs.getBool('showBoundingBoxesByDefault'), isTrue);
       expect(prefs.getBool('hasSeenIntro'), isTrue);
@@ -179,27 +174,29 @@ void main() {
   });
 
   group('theme', () {
-    test('defaults to gradient, loads and saves a valid theme', () async {
+    test('defaults to system, loads and saves a valid theme', () async {
       final (s, prefs) = await loadWith({});
-      expect(s.theme, 'gradient');
-      s.theme = 'embroidery';
+      expect(s.theme, 'system');
+      s.theme = 'dark';
       await flushSaves();
-      expect(s.theme, 'embroidery');
-      expect(prefs.getString('theme'), 'embroidery');
-      expect((await loadWith({'theme': 'bold'})).$1.theme, 'bold');
+      expect(s.theme, 'dark');
+      expect(prefs.getString('theme'), 'dark');
+      expect((await loadWith({'theme': 'light'})).$1.theme, 'light');
     });
 
-    test('an unknown theme falls back to gradient', () async {
-      expect((await loadWith({'theme': 'neon'})).$1.theme, 'gradient');
+    test('an unknown or retired theme falls back to system', () async {
+      expect((await loadWith({'theme': 'neon'})).$1.theme, 'system');
+      // Looks from earlier versions of the app.
+      expect((await loadWith({'theme': 'gradient'})).$1.theme, 'system');
       final (s, _) = await loadWith({});
       s.theme = 'neon';
-      expect(s.theme, 'gradient');
+      expect(s.theme, 'system');
     });
 
     test('reset returns to the default theme', () async {
-      final (s, _) = await loadWith({'theme': 'bold'});
+      final (s, _) = await loadWith({'theme': 'dark'});
       await s.resetToDefaults();
-      expect(s.theme, 'gradient');
+      expect(s.theme, 'system');
     });
   });
 

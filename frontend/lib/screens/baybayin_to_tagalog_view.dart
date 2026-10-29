@@ -1,11 +1,10 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show applyBoxFit, FittedSizes;
 import 'package:flutter/services.dart';
 import '../services/api_service.dart';
 import '../services/app_language.dart';
-import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../services/offline_recognizer.dart';
 import '../services/recognition_outcome.dart';
 import '../widgets/image_cropper_widget.dart';
@@ -13,8 +12,8 @@ import '../screens/camera_capture_screen.dart';
 import '../screens/baybayin_result_screen.dart';
 import '../screens/multi_page_result_screen.dart';
 import '../widgets/dayaw_style.dart';
-import '../widgets/embroidery.dart';
 import '../widgets/glass.dart';
+import '../widgets/scan_beam.dart';
 
 
 const bool kShowCrashReports = false;
@@ -22,7 +21,11 @@ const bool kShowCrashReports = false;
 /// send it for translation, and show the result. Fully self-contained —
 /// owns its own state, independent of the text-translation mode.
 class BaybayinToTagalogView extends StatefulWidget {
-  const BaybayinToTagalogView({super.key});
+  const BaybayinToTagalogView({super.key, this.header});
+
+  /// Shown at the top in place of this view's own header, so a parent
+  /// page (the combined Recognize page) can share one header.
+  final Widget? header;
 
   @override
   State<BaybayinToTagalogView> createState() => _BaybayinToTagalogViewState();
@@ -65,8 +68,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
             content: Text(message),
             duration: const Duration(seconds: 6),
             backgroundColor: message.contains('FAILED')
-                ? Colors.red[700]
-                : Colors.green[700],
+                ? DayawColors.brick
+                : DayawColors.leaf,
           ),
         );
       });
@@ -279,7 +282,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   /// preset and lock focus/exposure before capture - neither of which
   /// the OS camera app exposes to us.
   Future<void> _captureFromCamera() async {
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.lightImpact();
+    Haptics.light();
     final CameraCaptureResult? captured = await Navigator.of(context)
         .push<CameraCaptureResult>(
           MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
@@ -454,9 +457,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     final image = _webImage;
     final data = _lastResultData;
     if (_isLoading || image == null || data == null) return;
-    if (haptic && AppSettings.instance.hapticsEnabled) {
-      HapticFeedback.selectionClick();
-    }
+    if (haptic) Haptics.selection();
     if (_isMultiPage) {
       Navigator.of(context).push(
         MaterialPageRoute(
@@ -504,10 +505,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   // ---------------------------------------------------------------------
 
   // Shared muted-honey palette (see DayawColors).
-  static const Color _amber = DayawColors.amber;
-  static const Color _gold = DayawColors.gold;
-  static const Color _yellow = DayawColors.yellow;
-  static const Color _deepBrown = DayawColors.deepBrown;
+  static Color get _amber => DayawColors.amber;
+  static Color get _yellow => DayawColors.yellow;
+  static Color get _deepBrown => DayawColors.text;
 
   // (icon, English, Filipino)
   static const List<(IconData, String, String)> _tips = [
@@ -552,9 +552,6 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     ),
   ];
 
-  /// 0..1..0 once per ambient loop - for breathing / pulsing.
-  double get _breath => 0.5 - 0.5 * math.cos(2 * math.pi * _ambient.value);
-
   double get _confidenceScore {
     final data = _lastResultData;
     if (data == null) return 0;
@@ -569,9 +566,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   }
 
   Color _confidenceColor(double confidence) {
-    if (confidence >= 90) return const Color(0xFF5E8B5A);
-    if (confidence >= 75) return const Color(0xFFC2873F);
-    return const Color(0xFFB35C52);
+    if (confidence >= 90) return DayawColors.leaf;
+    if (confidence >= 75) return DayawColors.amber;
+    return DayawColors.brick;
   }
 
   @override
@@ -580,7 +577,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
       children: [
-        _buildHeroHeader(),
+        widget.header ?? _buildHeroHeader(),
         const SizedBox(height: 16),
         _buildScannerCard(),
         const SizedBox(height: 18),
@@ -626,71 +623,31 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         'Kunan ng larawan ang sulat-kamay na Baybayin at makuha ang titik '
             'Latin sa ilang segundo.',
       ),
-      baybayin: 'ᜊᜌ᜔ᜊᜌᜒᜈ᜔ · ᜇᜌᜏ᜔ · ᜆᜄᜎᜓᜄ᜔',
       shimmer: _ambient,
     );
   }
 
-  /// The photo (or the empty scanner), framed by a slowly rotating
-  /// gradient glow.
+  /// The photo (or the empty scanner) in a sunken well, set in a raised
+  /// neumorphic frame whose yellow rim breathes while it reads.
   Widget _buildScannerCard() {
-    // Gradient: rotating honey ring. Bold: solid amber ring. Embroidery:
-    // an amber hoop stitch, drawn over the photo too like a frame.
-    final embroidered = DayawTheme.of(context) == DayawTheme.embroidery;
+    DayawTheme.of(context);
     return RepaintBoundary(
-      child: AnimatedBuilder(
-        animation: _ambient,
-        builder: (context, child) {
-          final glow = _isLoading ? 1.0 : 0.35 + 0.35 * _breath;
-          return Container(
-            height: 300,
-            padding: embroidered ? null : const EdgeInsets.all(2.5),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(26),
-              color: embroidered ? const Color(0xFFFFFBF5) : _amber,
-              gradient: themedGradient(
-                SweepGradient(
-                  transform: GradientRotation(2 * math.pi * _ambient.value),
-                  colors: const [
-                    // Starts and ends on the same yellow so the rotating
-                    // seam is invisible.
-                    _yellow,
-                    _amber,
-                    _gold,
-                    _yellow,
-                    Color(0xFFB9853A),
-                    _gold,
-                    _yellow,
-                  ],
-                ),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: _yellow.withValues(alpha: 0.3 * glow),
-                  blurRadius: 16 + 10 * glow,
-                  spreadRadius: glow,
-                ),
-              ],
-            ),
-            child: embroidered
-                ? CustomPaint(
-                    foregroundPainter: const StitchBorderPainter(
-                      color: Thread.amber,
-                      radius: 26,
-                      inset: 7,
-                      stitch: 9,
-                      gap: 5,
-                      width: 2.4,
-                    ),
-                    child: child,
-                  )
-                : child,
-          );
-        },
+      child: Container(
+        height: 280,
+        padding: const EdgeInsets.all(10),
+        // Raised frame, the well pressed into it; the well's rim turns
+        // yellow while a scan is being read.
+        decoration: neuRaised(borderRadius: BorderRadius.circular(30)),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(30),
+          border: _isLoading
+              ? Border.all(color: _yellow.withValues(alpha: 0.7), width: 1.5)
+              : null,
+        ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(embroidered ? 26 : 23.5),
-          child: ColoredBox(
-            color: const Color(0xFFFFFBF5),
+          borderRadius: BorderRadius.circular(22),
+          child: DecoratedBox(
+            decoration: neuSunken(borderRadius: BorderRadius.circular(22)),
             child: Stack(
               children: [
                 // Swipe right-to-left on the image to open the last result
@@ -742,120 +699,57 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: _captureFromCamera,
-      child: AnimatedBuilder(
-        animation: _ambient,
-        builder: (context, _) => LayoutBuilder(
-          builder: (context, constraints) => Stack(
-            alignment: Alignment.center,
-            children: [
-              for (var i = 0; i < 3; i++)
-                _radarRing((_ambient.value + i / 3) % 1),
+      // Empty state: viewfinder corners and a gliding scan beam behind a
+      // raised round icon and a hint. Tap anywhere to scan.
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          ScanBeam(animation: _ambient),
+          Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
               Container(
-                width: 84,
-                height: 84,
+                width: 68,
+                height: 68,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _yellow,
-                  gradient: themedGradient(
-                    const LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [_gold, _yellow, _amber],
-                    ),
-                  ),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x44D9A441),
-                      blurRadius: 22,
-                      offset: Offset(0, 8),
-                    ),
-                  ],
+                  color: DayawColors.bg,
+                  boxShadow: neuShadows(depth: 0.6),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.document_scanner_outlined,
-                  color: _deepBrown,
-                  size: 38,
+                  color: DayawColors.amber,
+                  size: 28,
                 ),
               ),
-              Positioned(
-                bottom: 22,
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Text(
                   context.tr('Tap to start scanning', 'I-tap para mag-scan'),
                   style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: _deepBrown.withValues(alpha: 0.6 + 0.4 * _breath),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: DayawColors.textMuted,
                   ),
                 ),
               ),
-              _scanLine(constraints.maxHeight, faint: true),
-            ],
+        ],
           ),
-        ),
+        ],
       ),
     );
   }
 
-  Widget _radarRing(double t) {
-    final size = 84 + 170 * t;
-    return IgnorePointer(
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: Color.lerp(
-              _yellow,
-              _amber,
-              t,
-            )!.withValues(alpha: (1 - t) * 0.9),
-            width: 3 - t,
-          ),
+  /// The loading sweep: the shared scan beam, brighter.
+  Widget _scanLine(double height, {bool faint = false}) =>
+      Positioned.fill(
+        child: ScanBeam(
+          animation: _ambient,
+          strong: !faint,
+          corners: false,
         ),
-      ),
-    );
-  }
-
-  /// Horizontal glowing line sweeping top to bottom.
-  Widget _scanLine(double height, {bool faint = false}) {
-    final t = Curves.easeInOut.transform(
-      (_ambient.value * 2) % 1 < 0.5
-          ? ((_ambient.value * 2) % 1) * 2
-          : 2 - ((_ambient.value * 2) % 1) * 2,
-    );
-    return Positioned(
-      top: t * (height - 4),
-      left: 0,
-      right: 0,
-      child: IgnorePointer(
-        child: Container(
-          height: 3,
-          decoration: BoxDecoration(
-            color: _amber.withValues(alpha: faint ? 0.75 : 1),
-            gradient: themedGradient(
-              LinearGradient(
-                colors: [
-                  _amber.withValues(alpha: 0),
-                  _yellow.withValues(alpha: faint ? 0.75 : 1),
-                  _gold,
-                  _yellow.withValues(alpha: faint ? 0.75 : 1),
-                  _amber.withValues(alpha: 0),
-                ],
-              ),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: _yellow.withValues(alpha: faint ? 0.45 : 0.85),
-                blurRadius: 12,
-                spreadRadius: 2,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+      );
 
   Widget _buildImageDisplay() {
     final hasBoxes =
@@ -928,7 +822,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                                 height: 14,
                                 child: CircularProgressIndicator(
                                   strokeWidth: 2,
-                                  color: _gold,
+                                  color: DayawColors.sun,
                                 ),
                               ),
                               const SizedBox(width: 10),
@@ -959,57 +853,31 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
     final label = _webImage == null
         ? context.tr('Scan with Camera', 'I-scan gamit ang Kamera')
         : context.tr('Scan Again', 'Mag-scan Muli');
-    return AnimatedBuilder(
-      animation: _ambient,
-      builder: (context, child) => Transform.scale(
-        scale: _isLoading ? 1 : 1 + 0.02 * _breath,
-        child: Container(
-          height: 58,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(29),
-            // Honey gradient whose bright band slowly drifts back and
-            // forth, like light moving across it.
-            color: _isLoading ? Colors.grey.shade400 : _yellow,
-            gradient: themedGradient(
-              LinearGradient(
-                begin: Alignment(-1.6 + 1.2 * _breath, 0),
-                end: Alignment(1.6 + 1.2 * _breath, 0),
-                colors: _isLoading
-                    ? [Colors.grey.shade400, Colors.grey.shade500]
-                    : const [_amber, _yellow, _gold, _yellow, _amber],
-              ),
-            ),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: _isLoading ? 0 : 0.7),
-              width: 1.5,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(
-                  0xFFFFC400,
-                ).withValues(alpha: _isLoading ? 0 : 0.2 + 0.15 * _breath),
-                blurRadius: 18 + 14 * _breath,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: child,
-        ),
+    // Flat yellow key with a soft lift; sinks into the ground while busy.
+    return Container(
+      height: 54,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(27),
+        color: _isLoading ? DayawColors.well : DayawColors.sun,
+        boxShadow: _isLoading ? null : neuShadows(depth: 0.5),
       ),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          borderRadius: BorderRadius.circular(29),
+          borderRadius: BorderRadius.circular(27),
           onTap: _isLoading ? null : _captureFromCamera,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.camera_alt_rounded, color: _deepBrown),
+              Icon(
+                Icons.camera_alt_rounded,
+                color: _isLoading ? DayawColors.textMuted : DayawColors.onSun,
+              ),
               const SizedBox(width: 10),
               Text(
                 label,
-                style: const TextStyle(
-                  color: _deepBrown,
+                style: TextStyle(
+                  color: _isLoading ? DayawColors.textMuted : DayawColors.onSun,
                   fontSize: 17,
                   fontWeight: FontWeight.w800,
                   letterSpacing: 0.3,
@@ -1032,12 +900,12 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         padding: const EdgeInsets.all(18),
         child: Row(
           children: [
-            const Icon(Icons.info_outline, color: Color(0xFFC2873F)),
+            Icon(Icons.info_outline, color: DayawColors.amber),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
                 _translatedResult,
-                style: const TextStyle(fontSize: 14, color: Colors.black87),
+                style: TextStyle(fontSize: 14, color: DayawColors.text),
               ),
             ),
           ],
@@ -1068,7 +936,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
       ),
       child: GlassContainer(
         padding: const EdgeInsets.all(18),
-        // Lightly honey-tinted glass for the result card.
+        // Lightly yellow-washed card for the result.
         tint: const Color(0xA6FFF4B8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1081,22 +949,16 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: _yellow,
-                    gradient: themedGradient(
-                      const LinearGradient(colors: [_gold, _yellow, _amber]),
-                    ),
+                    border: Border.all(color: DayawColors.line),
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [
-                      BoxShadow(color: Color(0x33D9A441), blurRadius: 8),
-                    ],
                   ),
                   child: Text(
                     context.tr('LAST CAPTURED', 'HULING KUHA'),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w800,
                       letterSpacing: 1,
-                      color: Colors.black87,
+                      color: DayawColors.amber,
                     ),
                   ),
                 ),
@@ -1107,7 +969,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
             const SizedBox(height: 12),
             Text(
               _translatedResult,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 26,
                 fontWeight: FontWeight.w900,
                 color: _deepBrown,
@@ -1150,8 +1012,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               child: FilledButton.icon(
                 onPressed: _openLastResult,
                 style: FilledButton.styleFrom(
-                  backgroundColor: _deepBrown,
-                  foregroundColor: _yellow,
+                  backgroundColor: DayawColors.charcoal,
+                  foregroundColor: DayawColors.sun,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
@@ -1216,27 +1078,15 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   Widget _statChip(IconData icon, String label) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: _yellow.withValues(alpha: 0.45),
-        gradient: themedGradient(
-          LinearGradient(
-            colors: [
-              _yellow.withValues(alpha: 0.55),
-              _gold.withValues(alpha: 0.35),
-            ],
-          ),
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _amber.withValues(alpha: 0.5)),
-      ),
+      decoration: neuSunken(borderRadius: BorderRadius.circular(20)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: Colors.brown),
+          Icon(icon, size: 14, color: _amber),
           const SizedBox(width: 5),
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w600,
               color: _deepBrown,
@@ -1250,62 +1100,31 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   /// Sideways-scrolling row of colorful tip cards.
   Widget _buildTips() {
     return SizedBox(
-      height: 96,
+      height: 38,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         clipBehavior: Clip.none,
         itemCount: _tips.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 10),
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
           final (icon, en, fil) = _tips[i];
           final label = context.tr(en, fil);
+          // A small flat chip: icon + one line of advice.
           return Container(
-            width: 112,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
-              color: Colors.white.withValues(alpha: 0.7),
-              gradient: themedGradient(
-                LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  // One quiet sand wash for every tip, so the row stays calm.
-                  colors: [
-                    Colors.white.withValues(alpha: 0.7),
-                    _gold.withValues(alpha: 0.45),
-                  ],
-                ),
-              ),
-              border: Border.all(color: _yellow.withValues(alpha: 0.6)),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x33D9A441),
-                  blurRadius: 10,
-                  offset: Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: neuSunken(borderRadius: BorderRadius.circular(19)),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: _deepBrown,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(icon, color: _gold, size: 18),
-                ),
-                const Spacer(),
+                Icon(icon, color: DayawColors.amber, size: 16),
+                const SizedBox(width: 6),
                 Text(
                   label,
-                  maxLines: 2,
-                  style: const TextStyle(
+                  maxLines: 1,
+                  style: TextStyle(
                     fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     color: _deepBrown,
-                    height: 1.15,
                   ),
                 ),
               ],
@@ -1327,27 +1146,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
           setState(() => _factIndex = (_factIndex + 1) % _facts.length),
       child: Container(
         padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(22),
-          color: _deepBrown,
-          gradient: themedGradient(
-            const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              // Dark brown easing into a softer brown corner.
-              colors: [_deepBrown, Color(0xFF6D4C41), Color(0xFF8A6A4A)],
-              stops: [0, 0.6, 1],
-            ),
-          ),
-          border: Border.all(color: _yellow.withValues(alpha: 0.7), width: 1.5),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x33D9A441),
-              blurRadius: 22,
-              offset: Offset(0, 10),
-            ),
-          ],
-        ),
+        decoration: neuSunken(borderRadius: BorderRadius.circular(20)),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1371,10 +1170,10 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                     width: 84,
                     child: Text(
                       sample,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'BaybayinCustom',
-                        fontSize: 28,
-                        color: _gold,
+                        fontSize: 24,
+                        color: DayawColors.amber,
                         height: 1.2,
                       ),
                     ),
@@ -1383,8 +1182,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                   Expanded(
                     child: Text(
                       fact,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: DayawColors.text,
                         fontSize: 14,
                         height: 1.4,
                         fontWeight: FontWeight.w500,
@@ -1405,8 +1204,8 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                     height: 6,
                     decoration: BoxDecoration(
                       color: i == _factIndex
-                          ? _gold
-                          : Colors.white.withValues(alpha: 0.35),
+                          ? DayawColors.sun
+                          : DayawColors.line,
                       borderRadius: BorderRadius.circular(3),
                     ),
                   ),
@@ -1415,7 +1214,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
                   context.tr('Tap for next', 'I-tap para sa susunod'),
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.white.withValues(alpha: 0.6),
+                    color: DayawColors.textMuted,
                   ),
                 ),
               ],
@@ -1447,7 +1246,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         width: 30,
         padding: const EdgeInsets.symmetric(vertical: 14),
         decoration: const BoxDecoration(
-          color: Colors.brown,
+          color: DayawColors.charcoal,
           borderRadius: BorderRadius.only(
             topLeft: Radius.circular(14),
             bottomLeft: Radius.circular(14),
@@ -1463,14 +1262,14 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.chevron_left, color: Colors.white, size: 22),
+            const Icon(Icons.chevron_left, color: DayawColors.sun, size: 22),
             const SizedBox(height: 6),
             RotatedBox(
               quarterTurns: 3,
               child: Text(
                 context.tr('RESULT', 'RESULTA'),
                 style: const TextStyle(
-                  color: Colors.white,
+                  color: DayawColors.sun,
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                   letterSpacing: 1.5,
@@ -1478,7 +1277,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
               ),
             ),
             const SizedBox(height: 6),
-            const Icon(Icons.chevron_left, color: Colors.white, size: 22),
+            const Icon(Icons.chevron_left, color: DayawColors.sun, size: 22),
           ],
         ),
       ),
@@ -1514,7 +1313,7 @@ class _DetectionBoxPainter extends CustomPainter {
 
     final boxPaint = Paint()
       ..color =
-          const Color(0xFF00E676) // green
+          DayawColors.sun
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -1542,9 +1341,10 @@ class _DetectionBoxPainter extends CustomPainter {
           text: TextSpan(
             text: char,
             style: const TextStyle(
-              color: Colors.white,
+              color: DayawColors.sun,
               fontSize: 11,
-              backgroundColor: Color(0xCC000000),
+              fontWeight: FontWeight.w700,
+              backgroundColor: Color(0xE01E1C19),
             ),
           ),
           textDirection: TextDirection.ltr,

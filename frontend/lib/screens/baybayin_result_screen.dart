@@ -7,6 +7,7 @@ import 'package:image/image.dart' as img;
 
 import '../services/app_language.dart';
 import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../services/recognition_outcome.dart';
 import '../services/result_exporter.dart';
 import '../widgets/dayaw_style.dart';
@@ -168,15 +169,15 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   }
 
   Color _confidenceColor(double conf) {
-    if (conf >= 90.0) return Colors.green;
-    if (conf >= 80.0) return Colors.amber[800]!;
-    if (conf >= 70.0) return Colors.red;
-    return Colors.grey;
+    if (conf >= 90.0) return DayawColors.leaf;
+    if (conf >= 80.0) return DayawColors.amber;
+    if (conf >= 70.0) return DayawColors.brick;
+    return DayawColors.textMuted;
   }
 
   void _copyResult() {
     Clipboard.setData(ClipboardData(text: widget.translatedText));
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.lightImpact();
+    Haptics.light();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(tr('Copied to clipboard', 'Nakopya na')),
@@ -196,14 +197,14 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     (
       ExportFormat.jpg,
       Icons.image_outlined,
-      'Image, small file size',
-      'Larawan, maliit na file',
+      'Saves to Gallery, small file size',
+      'Ise-save sa Gallery, maliit na file',
     ),
     (
       ExportFormat.png,
       Icons.photo_outlined,
-      'Image, sharpest quality',
-      'Larawan, pinakamalinaw',
+      'Saves to Gallery, sharpest quality',
+      'Ise-save sa Gallery, pinakamalinaw',
     ),
     (
       ExportFormat.pdf,
@@ -222,7 +223,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   };
 
   Future<void> _openExportSheet() async {
-    if (AppSettings.instance.hapticsEnabled) HapticFeedback.selectionClick();
+    Haptics.selection();
     final format = await showModalBottomSheet<ExportFormat>(
       context: context,
       backgroundColor: Colors.transparent,
@@ -248,7 +249,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                     'Kasama ang larawan sa kasalukuyang filter, ang resulta '
                         'at ang bawat karakter.',
                   ),
-                  style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+                  style: TextStyle(fontSize: 12.5, color: DayawColors.textMuted),
                 ),
                 const SizedBox(height: 10),
                 for (final (format, icon, descEn, descFil) in _exportOptions)
@@ -261,22 +262,27 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                       width: 38,
                       height: 38,
                       decoration: BoxDecoration(
-                        color: DayawColors.deepBrown,
+                        color: DayawColors.charcoal,
                         borderRadius: BorderRadius.circular(11),
                       ),
-                      child: Icon(icon, color: DayawColors.gold, size: 20),
+                      child: Icon(icon, color: DayawColors.sun, size: 20),
                     ),
                     title: Text(
                       format.label,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w800,
-                        color: DayawColors.deepBrown,
+                        color: DayawColors.text,
                       ),
                     ),
-                    subtitle: Text(context.tr(descEn, descFil)),
+                    subtitle: Text(
+                      context.tr(descEn, descFil),
+                      style: TextStyle(color: DayawColors.textMuted),
+                    ),
                     trailing: Icon(
-                      Icons.chevron_right,
-                      color: DayawColors.deepBrown.withValues(alpha: 0.4),
+                      format.savesToGallery
+                          ? Icons.download_rounded
+                          : Icons.chevron_right,
+                      color: DayawColors.textMuted,
                     ),
                     onTap: () => Navigator.of(context).pop(format),
                   ),
@@ -292,7 +298,19 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   Future<void> _export(ExportFormat format) async {
     setState(() => _isExporting = true);
     try {
-      await ResultExporter.share(await _collectExport(), format);
+      await ResultExporter.export(await _collectExport(), format);
+      if (mounted && format.savesToGallery) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              tr(
+                '${format.label} saved to Gallery (${ResultExporter.galleryAlbum} album)',
+                'Na-save ang ${format.label} sa Gallery (album na ${ResultExporter.galleryAlbum})',
+              ),
+            ),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -385,7 +403,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
         title: const SizedBox.shrink(),
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
-        foregroundColor: Colors.brown,
+        foregroundColor: DayawColors.text,
         elevation: 0,
         scrolledUnderElevation: 0,
         flexibleSpace: const GlassBar(child: SizedBox.expand()),
@@ -398,12 +416,12 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
           TextButton.icon(
             onPressed: _isExporting ? null : _openExportSheet,
             icon: _isExporting
-                ? const SizedBox(
+                ? SizedBox(
                     width: 18,
                     height: 18,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Colors.brown,
+                      color: DayawColors.amber,
                     ),
                   )
                 : const Icon(Icons.ios_share_outlined),
@@ -443,9 +461,10 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               const SizedBox(height: 24),
               Text(
                 context.tr('Character Breakdown', 'Bawat Karakter'),
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: 16,
+                  color: DayawColors.text,
                 ),
               ),
               const SizedBox(height: 12),
@@ -457,7 +476,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                   '© 2026 DAYAW. Nakalaan ang lahat ng karapatan.',
                 ),
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11, color: Colors.grey),
+                style: TextStyle(fontSize: 11, color: DayawColors.textMuted),
               ),
             ],
           ),
@@ -502,8 +521,9 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       width: 40,
       height: 40,
       decoration: BoxDecoration(
-        color: _showBoundingBoxes ? _accentColor : Colors.black54,
+        color: _showBoundingBoxes ? _accentColor : DayawColors.surface,
         shape: BoxShape.circle,
+        boxShadow: neuShadows(depth: 0.45),
       ),
       child: IconButton(
         tooltip: _showBoundingBoxes
@@ -518,7 +538,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
         icon: Icon(
           Icons.crop_free,
           size: 20,
-          color: _showBoundingBoxes ? Colors.black87 : Colors.white,
+          color: _showBoundingBoxes ? DayawColors.onSun : DayawColors.text,
         ),
         onPressed: () =>
             setState(() => _showBoundingBoxes = !_showBoundingBoxes),
@@ -548,14 +568,14 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
           ),
         ),
         if (isLoading)
-          const Positioned.fill(
+          Positioned.fill(
             child: Center(
               child: SizedBox(
                 width: 28,
                 height: 28,
                 child: CircularProgressIndicator(
                   strokeWidth: 3,
-                  color: Colors.brown,
+                  color: DayawColors.amber,
                 ),
               ),
             ),
@@ -610,20 +630,20 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     );
   }
 
-  // Same look as the Marker/Pen switch on the camera screen: a dark
-  // rounded bar holding equal-width segments, the selected one yellow.
-  static const Color _accentColor = Color(0xFFFFFF00);
+  // A sunken neumorphic track holding equal-width segments, the selected
+  // one on a raised yellow pill.
+  static const Color _accentColor = DayawColors.sun;
   static const Duration _uiAnimationDuration = Duration(milliseconds: 220);
 
   Widget _buildFilterOptions() {
     return Row(
       children: [
         Expanded(
-          // Dark frosted glass, so the yellow selection still pops.
-          child: GlassContainer(
+          child: Container(
             padding: const EdgeInsets.all(3),
-            borderRadius: const BorderRadius.all(Radius.circular(12)),
-            tint: const Color(0x8C000000),
+            decoration: neuSunken(
+              borderRadius: const BorderRadius.all(Radius.circular(12)),
+            ),
             child: LiquidGlassSelector(
               count: _filters.length,
               selectedIndex: _filters.indexOf(_selectedFilter),
@@ -637,8 +657,8 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: Color.lerp(
-                      Colors.white70,
-                      Colors.black87,
+                      DayawColors.textMuted,
+                      DayawColors.onSun,
                       selectedness,
                     ),
                     fontWeight: FontWeight.w600,
@@ -696,7 +716,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       ),
       child: GlassContainer(
         padding: const EdgeInsets.all(18),
-        // Lightly honey-tinted glass for the result card.
+        // Lightly yellow-washed card for the result.
         tint: const Color(0xA6FFF4B8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -709,28 +729,16 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: DayawColors.yellow,
-                    gradient: themedGradient(
-                      const LinearGradient(
-                        colors: [
-                          DayawColors.gold,
-                          DayawColors.yellow,
-                          DayawColors.amber,
-                        ],
-                      ),
-                    ),
+                    border: Border.all(color: DayawColors.line),
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [
-                      BoxShadow(color: Color(0x33D9A441), blurRadius: 8),
-                    ],
                   ),
                   child: Text(
                     context.tr('IN LATIN', 'SA LATIN'),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
-                      fontWeight: FontWeight.w900,
+                      fontWeight: FontWeight.w800,
                       letterSpacing: 1,
-                      color: Colors.black87,
+                      color: DayawColors.amber,
                     ),
                   ),
                 ),
@@ -741,10 +749,10 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
             const SizedBox(height: 12),
             SelectableText(
               text.isEmpty ? '—' : text,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 26,
                 fontWeight: FontWeight.w900,
-                color: DayawColors.deepBrown,
+                color: DayawColors.text,
                 height: 1.2,
               ),
             ),
@@ -784,8 +792,8 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               child: FilledButton.icon(
                 onPressed: text.isEmpty ? null : _copyResult,
                 style: FilledButton.styleFrom(
-                  backgroundColor: DayawColors.deepBrown,
-                  foregroundColor: DayawColors.yellow,
+                  backgroundColor: DayawColors.charcoal,
+                  foregroundColor: DayawColors.sun,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
@@ -807,9 +815,9 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   /// Circular gauge that fills up to the average confidence.
   Widget _resultConfidenceRing(double confidence) {
     final color = confidence >= 90
-        ? const Color(0xFF5E8B5A)
+        ? DayawColors.leaf
         : confidence >= 75
-        ? const Color(0xFFC2873F)
+        ? DayawColors.amber
         : DayawColors.brick;
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: confidence / 100),
@@ -847,30 +855,18 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
   Widget _resultStatChip(IconData icon, String label) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: DayawColors.yellow.withValues(alpha: 0.45),
-        gradient: themedGradient(
-          LinearGradient(
-            colors: [
-              DayawColors.yellow.withValues(alpha: 0.55),
-              DayawColors.gold.withValues(alpha: 0.35),
-            ],
-          ),
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: DayawColors.amber.withValues(alpha: 0.5)),
-      ),
+      decoration: neuSunken(borderRadius: BorderRadius.circular(20)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: Colors.brown),
+          Icon(icon, size: 14, color: DayawColors.amber),
           const SizedBox(width: 5),
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w600,
-              color: DayawColors.deepBrown,
+              color: DayawColors.text,
             ),
           ),
         ],
@@ -882,15 +878,15 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     if (_lineResults.isEmpty &&
         !_lineResultsByFilter.containsKey(_selectedFilter)) {
       // Still building this filter's crops in the background.
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 20),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
         child: Center(
           child: SizedBox(
             width: 24,
             height: 24,
             child: CircularProgressIndicator(
               strokeWidth: 2.5,
-              color: Colors.brown,
+              color: DayawColors.amber,
             ),
           ),
         ),
@@ -905,7 +901,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
               'No individual characters detected.',
               'Walang nakitang karakter.',
             ),
-            style: const TextStyle(color: Colors.grey),
+            style: TextStyle(color: DayawColors.textMuted),
           ),
         ),
       );
@@ -981,9 +977,10 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       borderRadius: BorderRadius.circular(10),
       child: Container(
         height: 180,
+        // The chart is a light image: keep its paper light in dark mode.
         decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: Colors.brown.withValues(alpha: 0.25)),
+          color: const Color(0xFFF4F0E8),
+          border: Border.all(color: DayawColors.line),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Listener(
@@ -1015,15 +1012,20 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
       children: [
         Text(
           '$lineNumber',
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 28,
             fontWeight: FontWeight.bold,
             height: 1,
+            color: DayawColors.amber,
           ),
         ),
         Text(
           context.tr('Line', 'Linya'),
-          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: DayawColors.textMuted,
+          ),
         ),
       ],
     );
@@ -1037,11 +1039,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
     return Container(
       margin: const EdgeInsets.only(right: 8),
       padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.75),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
-      ),
+      decoration: neuSunken(borderRadius: BorderRadius.circular(12)),
       child: IntrinsicHeight(
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1062,7 +1060,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
             VerticalDivider(
               width: 16,
               thickness: 1,
-              color: Colors.brown.withValues(alpha: 0.25),
+              color: DayawColors.line,
             ),
             // Tapping the Latin letter opens the reference chart; tapping
             // it again closes it. The character's confidence is shown
@@ -1097,9 +1095,9 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
                       ),
                       Text(
                         '${result.confidence.round()}%',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 10,
-                          color: Colors.black54,
+                          color: DayawColors.textMuted,
                         ),
                       ),
                     ],

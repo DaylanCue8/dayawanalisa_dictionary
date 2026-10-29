@@ -3,17 +3,18 @@ import 'package:flutter/material.dart';
 
 import '../services/app_language.dart';
 import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../widgets/dayaw_style.dart';
 import '../widgets/glass.dart';
 import '../widgets/info_modal.dart';
+import '../widgets/latin_chart.dart';
 import '../widgets/liquid_glass_selector.dart';
 import 'intro_screen.dart';
 import 'legal_screen.dart';
 
-/// iOS-style grouped settings, each group a frosted glass card. Every
+/// iOS-style grouped settings, each group a softly raised card. Every
 /// value is saved on the device (see [AppSettings]). Shares the
-/// translator tabs' look: shimmering hero header, honey section titles
-/// and one calm brown icon style.
+/// translator's look: quiet header, small section labels, plain icons.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -52,7 +53,6 @@ class _SettingsScreenState extends State<SettingsScreen>
               'Make Dayaw work the way you read and write.',
               'Iayon ang Dayaw sa paraan mo ng pagbasa at pagsulat.',
             ),
-            baybayin: 'ᜀᜌᜓᜐᜒᜈ᜔',
             shimmer: _ambient,
           ),
           const SizedBox(height: 20),
@@ -139,19 +139,17 @@ class _SettingsScreenState extends State<SettingsScreen>
                 ),
                 trailing: Text(
                   '${settings.minConfidence.round()}%',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontWeight: FontWeight.w700,
-                    color: DayawColors.deepBrown,
+                    color: DayawColors.text,
                   ),
                 ),
                 below: SliderTheme(
                   data: SliderTheme.of(context).copyWith(
-                    activeTrackColor: DayawColors.deepBrown,
-                    inactiveTrackColor: DayawColors.yellow.withValues(
-                      alpha: 0.45,
-                    ),
-                    thumbColor: Colors.white,
-                    overlayColor: DayawColors.amber.withValues(alpha: 0.15),
+                    activeTrackColor: DayawColors.sun,
+                    inactiveTrackColor: DayawColors.well,
+                    thumbColor: DayawColors.charcoal,
+                    overlayColor: DayawColors.sun.withValues(alpha: 0.15),
                     trackHeight: 4,
                   ),
                   child: Slider(
@@ -178,20 +176,11 @@ class _SettingsScreenState extends State<SettingsScreen>
                   'Mag-vibrate sa pag-tap, tab, filter at pagkopya',
                 ),
                 value: settings.hapticsEnabled,
-                onChanged: (v) => settings.hapticsEnabled = v,
-              ),
-              _SwitchTile(
-                icon: Icons.blur_off,
-                title: context.tr(
-                  'Reduce transparency',
-                  'Bawasan ang transparency',
-                ),
-                subtitle: context.tr(
-                  'Solid panels instead of frosted glass',
-                  'Solidong panel sa halip na malabong salamin',
-                ),
-                value: settings.reduceTransparency,
-                onChanged: (v) => settings.reduceTransparency = v,
+                onChanged: (v) {
+                  settings.hapticsEnabled = v;
+                  // A buzz on switching on, so it's clear it works.
+                  if (v) Haptics.preview();
+                },
               ),
             ],
           ),
@@ -234,9 +223,9 @@ class _SettingsScreenState extends State<SettingsScreen>
               ),
               _Tile(
                 icon: Icons.table_chart_outlined,
-                title: context.tr('Baybayin chart', 'Tsart ng Baybayin'),
+                title: context.tr('Chart Guide', 'Gabay sa Tsart'),
                 showChevron: true,
-                onTap: () => _showChart(context),
+                onTap: () => showLatinChart(context),
               ),
               _Tile(
                 icon: Icons.description_outlined,
@@ -256,9 +245,9 @@ class _SettingsScreenState extends State<SettingsScreen>
               _Tile(
                 icon: Icons.verified_outlined,
                 title: context.tr('Version', 'Bersyon'),
-                trailing: const Text(
+                trailing: Text(
                   SettingsScreen.appVersion,
-                  style: TextStyle(color: Colors.black54),
+                  style: TextStyle(color: DayawColors.textMuted),
                 ),
               ),
             ],
@@ -282,38 +271,10 @@ class _SettingsScreenState extends State<SettingsScreen>
                 '© 2026 DAYAW. All rights reserved.',
                 '© 2026 DAYAW. Nakalaan ang lahat ng karapatan.',
               ),
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
+              style: TextStyle(fontSize: 11, color: DayawColors.textMuted),
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  void _showChart(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => Dialog(
-        insetPadding: const EdgeInsets.all(16),
-        backgroundColor: DayawColors.cream,
-        clipBehavior: Clip.antiAlias,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            InteractiveViewer(
-              maxScale: 8,
-              child: Image.asset('assets/images/baybayin_chart.jpg'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              style: TextButton.styleFrom(
-                foregroundColor: DayawColors.deepBrown,
-              ),
-              child: Text(context.tr('Close', 'Isara')),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -357,7 +318,7 @@ class _EmptyLicensesPage extends StatelessWidget {
           context.tr('Open-source licenses', 'Mga open-source na lisensya'),
         ),
         backgroundColor: Colors.transparent,
-        foregroundColor: DayawColors.deepBrown,
+        foregroundColor: DayawColors.text,
         elevation: 0,
       ),
       extendBodyBehindAppBar: true,
@@ -368,7 +329,7 @@ class _EmptyLicensesPage extends StatelessWidget {
               'No licenses to show yet.',
               'Wala pang lisensyang maipapakita.',
             ),
-            style: const TextStyle(color: Colors.black54),
+            style: TextStyle(color: DayawColors.textMuted),
           ),
         ),
       ),
@@ -405,7 +366,7 @@ class _Section extends StatelessWidget {
                       height: 1,
                       thickness: 0.5,
                       indent: 58,
-                      color: DayawColors.deepBrown.withValues(alpha: 0.12),
+                      color: DayawColors.line,
                     ),
                   children[i],
                 ],
@@ -418,7 +379,7 @@ class _Section extends StatelessWidget {
   }
 }
 
-/// One settings row: brown icon badge, title (+ optional subtitle),
+/// One settings row: a plain muted icon, title (+ subtitle),
 /// optional trailing widget, and an optional full-width control below.
 /// [destructive] rows (e.g. reset) use the muted brick color instead.
 class _Tile extends StatelessWidget {
@@ -453,19 +414,14 @@ class _Tile extends StatelessWidget {
           children: [
             Row(
               children: [
-                Container(
+                SizedBox(
                   width: 30,
-                  height: 30,
-                  decoration: BoxDecoration(
-                    color: destructive
-                        ? DayawColors.brick
-                        : DayawColors.deepBrown,
-                    borderRadius: BorderRadius.circular(9),
-                  ),
                   child: Icon(
                     icon,
-                    color: destructive ? Colors.white : DayawColors.gold,
-                    size: 17,
+                    color: destructive
+                        ? DayawColors.brick
+                        : DayawColors.textMuted,
+                    size: 20,
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -477,18 +433,18 @@ class _Tile extends StatelessWidget {
                         title,
                         style: TextStyle(
                           fontSize: 15,
-                          fontWeight: FontWeight.w600,
+                          fontWeight: FontWeight.w500,
                           color: destructive
                               ? DayawColors.brick
-                              : DayawColors.deepBrown,
+                              : DayawColors.text,
                         ),
                       ),
                       if (subtitle != null)
                         Text(
                           subtitle!,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12,
-                            color: Colors.black54,
+                            color: DayawColors.textMuted,
                           ),
                         ),
                     ],
@@ -498,7 +454,7 @@ class _Tile extends StatelessWidget {
                 if (showChevron)
                   Icon(
                     Icons.chevron_right,
-                    color: DayawColors.deepBrown.withValues(alpha: 0.4),
+                    color: DayawColors.textMuted,
                   ),
               ],
             ),
@@ -537,15 +493,15 @@ class _SwitchTile extends StatelessWidget {
       onTap: () => onChanged(!value),
       trailing: CupertinoSwitch(
         value: value,
-        activeTrackColor: DayawColors.deepBrown,
+        activeTrackColor: DayawColors.sun,
+        inactiveTrackColor: DayawColors.well,
         onChanged: onChanged,
       ),
     );
   }
 }
 
-/// The app's liquid glass selector on a small brown track, sized for a
-/// settings row.
+/// The app's selector in a small sunken track, sized for a settings row.
 class _SmallSelector extends StatelessWidget {
   final List<String> labels;
   final int selectedIndex;
@@ -559,13 +515,9 @@ class _SmallSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Plain brown track (no second blur): it already sits on a glass card.
     return Container(
       padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: DayawColors.deepBrown.withValues(alpha: 0.8),
-        borderRadius: BorderRadius.circular(11),
-      ),
+      decoration: neuSunken(borderRadius: BorderRadius.circular(11)),
       child: LiquidGlassSelector(
         count: labels.length,
         selectedIndex: selectedIndex,
@@ -579,7 +531,11 @@ class _SmallSelector extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              color: Color.lerp(Colors.white70, Colors.black87, selectedness),
+              color: Color.lerp(
+                DayawColors.textMuted,
+                DayawColors.onSun,
+                selectedness,
+              ),
               fontWeight: FontWeight.w600,
               fontSize: 11,
             ),

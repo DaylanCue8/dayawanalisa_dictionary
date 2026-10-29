@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:math';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import '../widgets/dayaw_style.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../services/app_language.dart';
 import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import '../widgets/liquid_glass_selector.dart';
 
 /// Custom camera capture screen (replaces the OS camera app for this
@@ -157,7 +159,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
   // lining up the next page - so it can't fire twice on the same one.
   bool _rearmAfterMovement = false;
 
-  static const Color _accentColor = Color(0xFFFFFF00);
+  static const Color _accentColor = DayawColors.sun;
 
   // Gap between the bottom controls and the bottom of the screen.
   static const double _bottomMargin = 16;
@@ -992,9 +994,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         if (left <= 0) {
           // Just hit the limit: say so right away, not on the next tap.
-          if (AppSettings.instance.hapticsEnabled) {
-            HapticFeedback.heavyImpact();
-          }
+          Haptics.heavy();
           await _showPageLimitDialog();
           return;
         }
@@ -1168,7 +1168,7 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
                               height: 40,
                               decoration: BoxDecoration(
                                 border: Border.all(
-                                  color: Colors.yellow,
+                                  color: DayawColors.sun,
                                   width: 2,
                                 ),
                                 shape: BoxShape.circle,
@@ -1436,7 +1436,7 @@ class _BaybayinGuidePainter extends CustomPainter {
     }
   }
 
-  static const Color _accent = Color(0xFFFFFF00);
+  static const Color _accent = DayawColors.sun;
 
   static void _dashed(
     Canvas canvas,

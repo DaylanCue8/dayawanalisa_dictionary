@@ -2,7 +2,7 @@ import 'package:flutter/physics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../services/app_settings.dart';
+import '../services/haptics.dart';
 import 'dayaw_style.dart';
 
 /// iOS "liquid glass" style segmented selector.
@@ -36,7 +36,7 @@ class LiquidGlassSelector extends StatefulWidget {
     required this.onChanged,
     required this.itemBuilder,
     this.height = 36,
-    this.pillColor = const Color(0xFFFFFF00),
+    this.pillColor = DayawColors.sun,
     this.pillRadius = const BorderRadius.all(Radius.circular(9)),
   });
 
@@ -106,14 +106,9 @@ class _LiquidGlassSelectorState extends State<LiquidGlassSelector>
     final index = _indexAt(details.localPosition.dx).round();
     _springTo(index.toDouble(), _snapSpring);
     if (index != widget.selectedIndex) {
-      _haptic(HapticFeedback.selectionClick);
+      Haptics.selection();
       _commit(index);
     }
-  }
-
-  /// Vibration feedback, unless turned off in Settings.
-  void _haptic(Future<void> Function() feedback) {
-    if (AppSettings.instance.hapticsEnabled) feedback();
   }
 
   int _commitToken = 0;
@@ -137,7 +132,7 @@ class _LiquidGlassSelectorState extends State<LiquidGlassSelector>
     _commitToken++; // a new drag overrides any selection still pending
     _hoverIndex = _position.value.round();
     _lift.forward();
-    _haptic(HapticFeedback.lightImpact);
+    Haptics.light();
     _followTo(local);
   }
 
@@ -148,7 +143,7 @@ class _LiquidGlassSelectorState extends State<LiquidGlassSelector>
     final hover = target.round();
     if (hover != _hoverIndex) {
       _hoverIndex = hover;
-      _haptic(HapticFeedback.selectionClick);
+      Haptics.selection();
     }
   }
 
@@ -207,11 +202,13 @@ class _LiquidGlassSelectorState extends State<LiquidGlassSelector>
     final scaleX = (1 + stretch) * (1 + 0.10 * lift);
     final scaleY = (1 - stretch * 0.45) * (1 + 0.22 * lift);
 
-    // Resting: solid accent. Lifted: see-through frosted glass tinted with
-    // the accent, with a bright rim and a soft shadow underneath.
+    // Resting: solid accent. Lifted: a touch lighter, as if catching light.
     final fill = Color.lerp(
       widget.pillColor,
-      widget.pillColor.withValues(alpha: 0.35),
+      Color.alphaBlend(
+        Colors.white.withValues(alpha: 0.35),
+        widget.pillColor,
+      ),
       lift,
     )!;
 
@@ -223,44 +220,26 @@ class _LiquidGlassSelectorState extends State<LiquidGlassSelector>
       child: Transform.scale(
         scaleX: scaleX,
         scaleY: scaleY,
+        // Neumorphic pill: soft shade below, highlight above; lifting it
+        // deepens both, as if it rose further out of the track.
         child: DecoratedBox(
           decoration: BoxDecoration(
             borderRadius: widget.pillRadius,
+            color: fill,
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.10 + 0.15 * lift),
-                blurRadius: 6 + 14 * lift,
-                offset: Offset(0, 2 + 6 * lift),
+                color: DayawColors.shadowDark.withValues(
+                  alpha: 0.55 + 0.3 * lift,
+                ),
+                blurRadius: 8 + 12 * lift,
+                offset: Offset(2 + 3 * lift, 3 + 5 * lift),
+              ),
+              BoxShadow(
+                color: DayawColors.shadowLight.withValues(alpha: 0.8),
+                blurRadius: 8 + 8 * lift,
+                offset: Offset(-2 - 2 * lift, -2 - 2 * lift),
               ),
             ],
-          ),
-          // No BackdropFilter here: the track around the selector is already
-          // frosted, and a second live blur redrawn every animation frame is
-          // what made the pill stutter on Android. A white sheen + bright rim
-          // over the see-through tint gives the same glassy look for free.
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: widget.pillRadius,
-              // Flat fill; while lifted, the brighter rim shows the pill
-              // is being dragged. The Gradient theme adds a white sheen.
-              color: fill,
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.25 + 0.55 * lift),
-                width: 1 + lift,
-              ),
-              gradient: lift > 0
-                  ? themedGradient(
-                      LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.white.withValues(alpha: 0.45 * lift),
-                          fill,
-                        ],
-                      ),
-                    )
-                  : null,
-            ),
           ),
         ),
       ),

@@ -277,6 +277,45 @@ void main() {
         );
       }
 
+      for (final format in ExportFormat.values) {
+        test(
+          'export ${format.savesToGallery ? 'saves' : 'shares'} a '
+          '${format.label} file',
+          () async {
+            final realSaver = ResultExporter.gallerySaver;
+            addTearDown(() => ResultExporter.gallerySaver = realSaver);
+            String? savedName;
+            Uint8List? savedBytes;
+            var shared = false;
+            ResultExporter.gallerySaver = (bytes, name) async {
+              savedBytes = bytes;
+              savedName = name;
+            };
+            ResultExporter.sharer = (_) async => shared = true;
+            await ResultExporter.export(sampleExport(), format);
+            if (format.savesToGallery) {
+              expect(shared, isFalse);
+              expect(savedName, 'dayaw_20260929_140500');
+              expect(savedBytes, isNotEmpty);
+            } else {
+              expect(shared, isTrue);
+              expect(savedName, isNull);
+            }
+          },
+        );
+      }
+
+      test('a failing Gallery save surfaces the error to the caller', () async {
+        final realSaver = ResultExporter.gallerySaver;
+        addTearDown(() => ResultExporter.gallerySaver = realSaver);
+        ResultExporter.gallerySaver = (_, _) async =>
+            throw StateError('permission denied');
+        await expectLater(
+          ResultExporter.export(sampleExport(), ExportFormat.jpg),
+          throwsStateError,
+        );
+      });
+
       test('a failing share sheet surfaces the error to the caller', () async {
         ResultExporter.sharer = (_) async => throw StateError('no share app');
         await expectLater(
