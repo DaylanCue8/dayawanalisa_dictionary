@@ -575,7 +575,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
   Widget build(BuildContext context) {
     final hasResult = _lastResultData != null && !_isLoading;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      padding: floatingNavPagePadding(context),
       children: [
         widget.header ?? _buildHeroHeader(),
         const SizedBox(height: 16),

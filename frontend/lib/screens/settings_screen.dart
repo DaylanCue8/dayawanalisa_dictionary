@@ -45,7 +45,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     return ListenableBuilder(
       listenable: settings,
       builder: (context, _) => ListView(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+        padding: floatingNavPagePadding(context),
         children: [
           DayawHeroHeader(
             title: context.tr('Settings', 'Mga Setting'),

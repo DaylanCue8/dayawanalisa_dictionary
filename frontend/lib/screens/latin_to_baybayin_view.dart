@@ -325,7 +325,7 @@ class _LatinToBaybayinViewState extends State<LatinToBaybayinView>
   Widget build(BuildContext context) {
     final hasResult = _data != null && !_isLoading;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+      padding: floatingNavPagePadding(context),
       children: [
         widget.header ?? _buildHeroHeader(),
         const SizedBox(height: 16),

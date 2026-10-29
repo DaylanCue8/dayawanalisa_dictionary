@@ -53,13 +53,9 @@ class _DayawLandingScreenState extends State<DayawLandingScreen> {
                   ),
                   child: KeyedSubtree(
                     key: ValueKey(selectedDestination),
-                    child: Padding(
-                      // Keeps content clear of the floating nav bar.
-                      padding: EdgeInsets.only(
-                        bottom: 72 + MediaQuery.of(context).padding.bottom,
-                      ),
-                      child: _buildSelectedDestination(),
-                    ),
+                    // Pages scroll on under the floating nav bar; each
+                    // adds its own end padding (floatingNavPagePadding).
+                    child: _buildSelectedDestination(),
                   ),
                 ),
               ),

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:gal/gal.dart';
 import 'package:image/image.dart' as img;
 import 'package:pdf/pdf.dart';
@@ -288,9 +289,13 @@ class ResultExporter {
       author: 'DAYAW',
       creator: 'DAYAW',
     );
+    // Helvetica has no Baybayin letters (they came out as boxes), so the
+    // app's own Baybayin font is the fallback for those characters.
+    final baybayin = await _baybayinFont();
     final theme = pw.ThemeData.withFont(
       base: pw.Font.helvetica(),
       bold: pw.Font.helveticaBold(),
+      fontFallback: [?baybayin],
     );
     final background = pw.PageTheme(
       theme: theme,
@@ -735,6 +740,22 @@ class ResultExporter {
     );
   }
 
+  static pw.Font? _baybayinFontCache;
+
+  /// The bundled Baybayin font (assets/fonts/baybayin_custom.ttf), or
+  /// null if it can't be loaded - the report is still made, just without
+  /// Baybayin glyphs, rather than failing.
+  static Future<pw.Font?> _baybayinFont() async {
+    if (_baybayinFontCache != null) return _baybayinFontCache;
+    try {
+      final data = await rootBundle.load('assets/fonts/baybayin_custom.ttf');
+      return _baybayinFontCache = pw.Font.ttf(data);
+    } catch (e) {
+      debugPrint('[EXPORT] Baybayin font unavailable: $e');
+      return null;
+    }
+  }
+
   static String _two(int n) => n.toString().padLeft(2, '0');
 
   static String _stamp(DateTime t) =>
@@ -745,16 +766,27 @@ class ResultExporter {
       '${t.year}-${_two(t.month)}-${_two(t.day)} ${_two(t.hour)}:${_two(t.minute)}';
 }
 
-/// RGBA pixels -> JPG. The report paints its own opaque cream background,
-/// so dropping alpha is safe. Top-level so it can run via compute.
+/// RGBA pixels -> JPG. Top-level so it can run via compute.
+///
+/// JPG has no transparency: the encoder blends any not-fully-opaque pixel
+/// with WHITE, which washed the report's colors out. So the pixels are
+/// first laid onto the report's own solid cream, then encoded at high
+/// quality with full-resolution color (4:4:4), keeping the small colored
+/// text and pills as vivid as the PNG.
 @visibleForTesting
 Uint8List rgbaToJpg((int, int, Uint8List) raster) {
   final (width, height, pixels) = raster;
-  final image = img.Image.fromBytes(
+  final rgba = img.Image.fromBytes(
     width: width,
     height: height,
     bytes: pixels.buffer,
+    bytesOffset: pixels.offsetInBytes,
     numChannels: 4,
   );
-  return Uint8List.fromList(img.encodeJpg(image, quality: 92));
+  final opaque = img.Image(width: width, height: height)
+    ..clear(img.ColorRgb8(0xF4, 0xF0, 0xE8));
+  img.compositeImage(opaque, rgba);
+  return Uint8List.fromList(
+    img.encodeJpg(opaque, quality: 96, chroma: img.JpegChroma.yuv444),
+  );
 }

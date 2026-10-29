@@ -227,6 +227,12 @@ class ThemeScope extends InheritedNotifier<ValueNotifier<String>> {
     : super(notifier: AppSettings.instance.themeNotifier);
 }
 
+/// Padding for a page that scrolls under the floating bottom bar: the
+/// content runs all the way beneath the bar (no band behind it), with
+/// room at the end so the last item can scroll clear of it.
+EdgeInsets floatingNavPagePadding(BuildContext context) =>
+    EdgeInsets.fromLTRB(20, 0, 20, 96 + MediaQuery.paddingOf(context).bottom);
+
 /// Neumorphism is flat: the old gradient fills are no longer drawn, so
 /// every decoration falls back to its solid `color`.
 Gradient? themedGradient(Gradient gradient) => null;
