@@ -897,6 +897,30 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
     );
   }
 
+  /// Multi-page only: a too-dark or too-blurry shot is NOT added, a short
+  /// message says so, and the camera stays ready for the next page (no
+  /// pop-up that stops the scan). Like after a good page, auto-capture
+  /// waits until the phone moves, so it does not fire again on the same
+  /// shot by itself.
+  void _skipBadPage(String message) {
+    if (!mounted) return;
+    setState(() {
+      _isCapturing = false;
+      _autoCaptureFired = true;
+      _rearmAfterMovement = true;
+      _stableSince = null;
+    });
+    Haptics.heavy();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+  }
+
   Future<void> _capture() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized || _isCapturing)
@@ -952,6 +976,16 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
       // Too dark (covered lens, no light) is checked BEFORE blur, so a
       // black photo gets the right message instead of "too blurry".
       if (_computeBrightness(cropped) < _minBrightness) {
+        if (_multiPageEnabled) {
+          // Multi-page: skip this shot and keep going with the next page.
+          _skipBadPage(
+            tr(
+              'Too dark - this page was not added. Retake it or go on to the next page.',
+              'Masyadong madilim - hindi naidagdag ang pahinang ito. Kunan muli o ituloy sa susunod na pahina.',
+            ),
+          );
+          return;
+        }
         if (mounted) {
           setState(() {
             _isCapturing = false;
@@ -965,6 +999,17 @@ class _CameraCaptureScreenState extends State<CameraCaptureScreen> {
 
       final blurScore = _computeBlurScore(cropped);
       if (blurScore < _blurVarianceThreshold) {
+        if (_multiPageEnabled) {
+          // Multi-page: a blurry shot is skipped (not added) and the scan
+          // goes on - no pop-up, so the user can move to the next page.
+          _skipBadPage(
+            tr(
+              'Too blurry - this page was not added. Retake it or go on to the next page.',
+              'Malabo - hindi naidagdag ang pahinang ito. Kunan muli o ituloy sa susunod na pahina.',
+            ),
+          );
+          return;
+        }
         if (mounted) {
           setState(() {
             _isCapturing = false;

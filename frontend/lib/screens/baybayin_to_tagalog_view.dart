@@ -370,12 +370,14 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
 
     final scanned = <ScannedPage>[];
     for (var i = 0; i < rawPages.length; i++) {
-      setState(
-        () => _loadingLabel = tr(
+      setState(() {
+        // Show the page being read right now (2 of 10 -> the 2nd photo).
+        _webImage = rawPages[i];
+        _loadingLabel = tr(
           'Reading page ${i + 1} of ${rawPages.length}',
           'Binabasa ang pahina ${i + 1} ng ${rawPages.length}',
-        ),
-      );
+        );
+      });
       // One bad page must not sink the whole scan: it's kept as an
       // unread page (shown with a warning) and the rest carry on.
       // Already rotated by the camera and straightened by the cropper.
@@ -421,6 +423,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView>
       _loadingLabel = null;
       _scannedPages = scanned;
       // The scanner card shows page 1, with its own boxes.
+      _webImage = first.image;
       _detections = first.detections.where((d) => d['bbox'] != null).toList();
       _imageWidth = readNumber(first.data, 'image_width');
       _imageHeight = readNumber(first.data, 'image_height');

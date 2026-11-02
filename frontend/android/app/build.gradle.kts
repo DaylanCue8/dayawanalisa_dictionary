@@ -50,8 +50,7 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.10"
-        // The Python launcher finds 3.10 on any machine (no user-specific path).
-        buildPython("py", "-3.10")
+        buildPython("C:/Users/Admin/AppData/Local/Python/pythoncore-3.10-64/python.exe")
         pip {
             install("numpy")
             install("opencv-python")

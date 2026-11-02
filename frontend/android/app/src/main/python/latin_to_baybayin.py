@@ -532,6 +532,47 @@ def drop_too_tall_boxes(boxes, factor=TOO_TALL_FACTOR):
     return [b for b in boxes if (b[3] - b[1]) <= factor * median_h]
 
 
+# ---- Side-edge slivers (paper edge, crop edge, shadow at the side) ----
+# The side of a photo often has a thin dark strip: the edge of the paper,
+# the table behind it, or a shadow left by the crop. It is small and
+# straight, so the noise filters keep it and the Latin model reads it as
+# 'i' or 'l'. A mark is dropped here when it is THIN and sits at the LEFT
+# or RIGHT side of the photo, and either touches the photo border or
+# stands apart from the letters of its line. A real 'i' or 'l' inside a
+# word is never touched: it is next to other letters, away from the side.
+SIDE_EDGE_MARGIN_FRAC = 0.015   # x photo width: "at the side" = within 1.5% of the border
+SIDE_EDGE_TOUCH_PX = 2          # within 2 px = touches the border
+SIDE_EDGE_THIN_FRAC = 0.35      # x median letter height: thinner = a stroke, not a wide letter
+SIDE_EDGE_GAP_FRAC = 0.6        # x median letter height: farther from every letter = apart
+
+
+def drop_side_edge_slivers(boxes, img_w):
+    """Returns (kept_boxes, number_dropped). Boxes are (x0, y0, x1, y1)
+    in full-width line coordinates."""
+    if not boxes or img_w <= 0:
+        return list(boxes), 0
+    median_h = float(np.median([b[3] - b[1] for b in boxes]))
+    margin = max(4, int(round(SIDE_EDGE_MARGIN_FRAC * img_w)))
+    # thin marks at the side are candidates; a strip is often broken into
+    # several pieces, so the gap is measured only to the OTHER marks
+    cand = [((b[0] <= margin or b[2] >= img_w - margin)
+             and (b[2] - b[0]) <= SIDE_EDGE_THIN_FRAC * median_h) for b in boxes]
+    letters = [b for b, c in zip(boxes, cand) if not c]
+    kept, dropped = [], 0
+    for (x0, y0, x1, y1), c in zip(boxes, cand):
+        if not c:
+            kept.append((x0, y0, x1, y1))
+            continue
+        touches = x0 <= SIDE_EDGE_TOUCH_PX or x1 >= img_w - SIDE_EDGE_TOUCH_PX
+        gaps = [max(bx0 - x1, x0 - bx1) for (bx0, _, bx1, _) in letters]
+        apart = (min(gaps) if gaps else float('inf')) >= SIDE_EDGE_GAP_FRAC * median_h
+        if touches or apart:
+            dropped += 1                      # a strip at the side, not a letter
+        else:
+            kept.append((x0, y0, x1, y1))
+    return kept, dropped
+
+
 # ---- Latin segmentation: one box per separate mark, dots go to their stem ----
 # The Baybayin-style segmentation stretches every mark up and down (a tall
 # merge kernel) so the i-dot reaches its stem. With slanted handwriting that
@@ -2275,6 +2316,10 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
         boxes, n_noise = drop_non_letter_marks(line_bin, boxes)
         letters_total += n_noise
         letters_rejected += n_noise
+        # thin strips at the left / right side of the photo are not letters
+        boxes, n_side = drop_side_edge_slivers(boxes, line_bin.shape[1])
+        letters_total += n_side
+        letters_rejected += n_side
         if not boxes:
             continue
         boxes = [(x0, y0 + by0, x1, y1 + by0) for (x0, y0, x1, y1) in boxes]

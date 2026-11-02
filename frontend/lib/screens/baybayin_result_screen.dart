@@ -552,18 +552,29 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
         _filteredSourceImages[_selectedFilter] ?? widget.sourceImage;
     final isLoading = _pendingFilters.contains(_selectedFilter);
 
-    Widget sourceImage(BoxFit fit) => Stack(
-      fit: StackFit.passthrough,
+    // expand: true makes the photo fill the whole box the bounding boxes
+    // are drawn in, so the boxes land exactly on the letters on every phone.
+    Widget sourceImage(BoxFit fit, {bool expand = false}) => Stack(
+      fit: expand ? StackFit.expand : StackFit.passthrough,
       children: [
         // Cross-fades between Raw / Black and White / HOG.
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
+          layoutBuilder: (current, previous) => Stack(
+            fit: expand ? StackFit.expand : StackFit.loose,
+            alignment: Alignment.center,
+            children: [...previous, if (current != null) current],
+          ),
           child: Image.memory(
             displayBytes,
             key: ValueKey(identityHashCode(displayBytes)),
             fit: fit,
+            width: expand ? double.infinity : null,
+            height: expand ? double.infinity : null,
+            // Only cacheWidth: setting cacheHeight too squashes the photo
+            // to 1600 x 1600 on phones with bigger photos, which pushed
+            // the bounding boxes off the letters.
             cacheWidth: 1600,
-            cacheHeight: 1600,
             gaplessPlayback: true,
           ),
         ),
@@ -615,7 +626,7 @@ class _BaybayinResultScreenState extends State<BaybayinResultScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            sourceImage(BoxFit.fill),
+            sourceImage(BoxFit.fill, expand: true),
             if (_showBoundingBoxes)
               CustomPaint(
                 painter: _BoundingBoxPainter(

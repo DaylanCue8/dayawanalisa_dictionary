@@ -644,17 +644,33 @@ class _LatinResultScreenState extends State<LatinResultScreen> {
         _filteredSourceImages[_selectedFilter] ?? widget.sourceImage;
     final isLoading = _pendingFilters.contains(_selectedFilter);
 
-    Widget sourceImage(BoxFit fit) => Stack(
-      fit: StackFit.passthrough,
+    // BOUNDING BOX FIX:
+    // 1) Only cacheWidth. With cacheWidth AND cacheHeight, a photo that is
+    //    smaller than 1600 on one side was decoded with the wrong shape
+    //    (e.g. 1600 x 1000 instead of 2000 x 1000), so it was drawn
+    //    narrower than the box layer and the boxes no longer lined up.
+    //    It depended on the camera's resolution - that is why it only
+    //    happened on some phones.
+    // 2) The image always fills the whole box area (expand). AnimatedSwitcher
+    //    lays its child out in a loose Stack, which let the image shrink to
+    //    its own shape instead of the box layer's shape.
+    Widget sourceImage(BoxFit fit, {bool expand = false}) => Stack(
+      fit: expand ? StackFit.expand : StackFit.passthrough,
       children: [
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
+          layoutBuilder: (current, previous) => Stack(
+            fit: expand ? StackFit.expand : StackFit.loose,
+            alignment: Alignment.center,
+            children: [...previous, if (current != null) current],
+          ),
           child: Image.memory(
             displayBytes,
             key: ValueKey(identityHashCode(displayBytes)),
             fit: fit,
+            width: expand ? double.infinity : null,
+            height: expand ? double.infinity : null,
             cacheWidth: 1600,
-            cacheHeight: 1600,
             gaplessPlayback: true,
           ),
         ),
@@ -706,7 +722,7 @@ class _LatinResultScreenState extends State<LatinResultScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            sourceImage(BoxFit.fill),
+            sourceImage(BoxFit.fill, expand: true),
             if (_showBoundingBoxes)
               CustomPaint(
                 painter: _BoundingBoxPainter(

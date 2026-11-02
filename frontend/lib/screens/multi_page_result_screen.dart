@@ -27,6 +27,34 @@ class ScannedPage {
 
   /// Average confidence (0-100) over this page's characters.
   double get confidence => averageConfidence(detections);
+
+  /// True when the recognizer said this page is too blurry to read. The
+  /// Baybayin pen / marker services return their blur message as the text
+  /// (BLURRY_IMAGE_MESSAGE), so both the status and the text are checked.
+  bool get isBlurry =>
+      (data?['status']?.toString().toLowerCase() ?? '').contains('blur') ||
+      text.toLowerCase().contains('too blurry');
+
+  /// Why an unread page was skipped - shown on its card. The other pages
+  /// are still read and shown; this page is just left out of the result.
+  String get problem {
+    if (data == null) {
+      return tr(
+        'This page could not be processed. It was skipped.',
+        'Hindi naproseso ang pahinang ito. Nilaktawan ito.',
+      );
+    }
+    if (isBlurry) {
+      return tr(
+        'This page is too blurry. It was skipped.',
+        'Masyadong malabo ang pahinang ito. Nilaktawan ito.',
+      );
+    }
+    return tr(
+      'No Baybayin letters found on this page.',
+      'Walang nakitang titik ng Baybayin sa pahinang ito.',
+    );
+  }
 }
 
 /// Mean of the numeric 'confidence' values in [detections] (0 if none).
@@ -284,10 +312,7 @@ class MultiPageResultScreen extends StatelessWidget {
                   Text(
                     read
                         ? (page.text.isEmpty ? '—' : page.text)
-                        : context.tr(
-                            'No Baybayin letters found on this page.',
-                            'Walang nakitang titik ng Baybayin sa pahinang ito.',
-                          ),
+                        : page.problem,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
