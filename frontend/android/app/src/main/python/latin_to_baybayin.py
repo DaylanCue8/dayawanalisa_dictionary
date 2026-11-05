@@ -1218,7 +1218,7 @@ def _box_union(bs):
             max(b[2] for b in bs), max(b[3] for b in bs))
 
 
-def read_word(mask, boxes, median_h, model, classes, word_set=None):
+def read_word(mask, boxes, median_h, model, classes, word_set=None, pen_mode=False):
     """boxes: one word's boxes (absolute coords).
     Returns (pieces, word, status) where pieces = [(box, candidates), ...]."""
     boxes = sorted(boxes, key=lambda b: b[0])
@@ -1238,6 +1238,14 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
 
     def worth_splitting(b):
         w = b[2] - b[0]
+        if pen_mode:
+            # Avoid cutting a normal-width handwritten letter into two labels.
+            # Only unusually wide, uncertain components can be split in Pen mode.
+            if w < 1.35 * median_h:
+                return False
+            c = whole_cands.get(b)
+            if c is not None and c[0][1] >= 0.82:
+                return False
         if w < SPLIT_MIN_WIDTH * median_h:
             return False                          # too narrow for 2 letters
         if w >= RECOG_SPLIT_MIN_WIDTH * median_h:
@@ -1264,6 +1272,20 @@ def read_word(mask, boxes, median_h, model, classes, word_set=None):
             normal_width = (b[2] - b[0]) < RECOG_SPLIT_MIN_WIDTH * median_h
             ranges = split_by_recognition(glyph, median_h, model, classes, force_split=True,
                                           thin_only=normal_width)
+            if pen_mode and len(ranges) > 1:
+                # Require a real vertical ink valley and plausible character
+                # widths; otherwise the SVM can invent two high-confidence
+                # labels from a single pen letter.
+                width = glyph.shape[1]
+                profile = (glyph > 0).sum(axis=0)
+                boundaries = [end for _, end in ranges[:-1]]
+                valid = (len(ranges) <= 3 and
+                         all((end-start) >= .24*median_h for start,end in ranges) and
+                         all(1 <= cut < width-1 and
+                             profile[cut] <= max(2., .13*median_h)
+                             for cut in boundaries))
+                if not valid:
+                    ranges = [(0, width)]
             if len(ranges) > 1:
                 parts = []
                 for a, c in ranges:
@@ -2205,6 +2227,270 @@ def latin_text_to_baybayin(text):
 # =====================================================================
 # MAIN ENTRY: photo -> Latin letters -> Baybayin
 # =====================================================================
+# =====================================================================
+# PEN-ONLY SEGMENTATION SAFEGUARDS (do not change the marker pipeline)
+# =====================================================================
+def pen_is_l_shape(glyph):
+    """Conservative capital L: long left stem and bottom horizontal foot.
+
+    Used to preserve thin pen Ls that generic straight-line/noise rejection
+    can mistake for a paper mark. It does NOT override the SVM label.
+    """
+    if glyph.size == 0:
+        return False
+    g = glyph > 0
+    h, w = g.shape
+    if h < 10 or w < 5 or not (0.22 <= w / float(h) <= 1.6):
+        return False
+    top = g[:max(1, h // 3)]
+    bottom = g[max(0, int(h * 0.78)):]
+    if not top.any() or not bottom.any():
+        return False
+    tx = np.where(top)[1]
+    bx = np.where(bottom)[1]
+    left_stem = np.mean(tx < w * 0.38) >= 0.65
+    bottom_foot = (np.any(bx < w * 0.30) and np.any(bx > w * 0.72))
+    right_top_clear = np.mean(top[:, int(w * 0.6):]) < 0.12
+    return bool(left_stem and bottom_foot and right_top_clear)
+
+
+def pen_is_letter_sized_candidate(glyph, median_h):
+    """Geometry-only rescue for pen I/L: never assigns a class label.
+
+    Avoids treating narrow upright handwriting as page noise, but requires
+    letter-scale height and a plausible stroke/foot shape.
+    """
+    if glyph.size == 0 or cv2.countNonZero(glyph) < 8:
+        return False
+    h, w = glyph.shape[:2]
+    if not (0.55 * median_h <= h <= 1.7 * median_h):
+        return False
+    if pen_is_l_shape(glyph):
+        return True
+    if w > 0.48 * h:
+        return False
+    ys, xs = np.where(glyph > 0)
+    top = xs[ys < 0.33 * h]
+    bottom = xs[ys >= 0.67 * h]
+    if not len(top) or not len(bottom):
+        return False
+    return abs(float(np.median(top)) - float(np.median(bottom))) <= max(3, 0.38 * h)
+
+
+def pen_rescue_line_candidates(original_line, cleaned_line, boxes, debug=False):
+    """Restore letter-like components lost in whole-image noise cleaning.
+
+    Requires a nearby surviving letter in the same row. Never rescues image
+    border components; uses the original mask so no strokes are fabricated.
+    """
+    if not boxes or np.array_equal(original_line, cleaned_line):
+        return cleaned_line, boxes
+    h_img, w_img = cleaned_line.shape
+    med_h = max(1., float(np.median([b[3]-b[1] for b in boxes])))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(original_line, connectivity=8)
+    result = cleaned_line.copy()
+    recovered = list(boxes)
+    for idx in range(1, n):
+        x, y, w, h, area = map(int, stats[idx])
+        if x <= 2 or y <= 2 or x+w >= w_img-2 or y+h >= h_img-2:
+            continue
+        if area < 8 or np.any(cleaned_line[labels == idx]):
+            continue
+        crop = original_line[y:y+h, x:x+w]
+        if not pen_is_letter_sized_candidate(crop, med_h):
+            continue
+        center = y+h/2.
+        near = any(abs(center-(b[1]+b[3])/2.) <= .52*med_h and
+                   max(b[0]-(x+w), x-b[2], 0) <= .8*med_h for b in boxes)
+        if not near:
+            continue
+        result[labels == idx] = original_line[labels == idx]
+        recovered.append((x,y,x+w,y+h))
+        if debug:
+            print(f'  [pen debug] rescued original letter-sized component {(x,y,x+w,y+h)}')
+    return result, sorted(recovered, key=lambda b:b[0])
+
+
+def pen_remove_noise(binary_img, debug=False):
+    """Pen-only conservative cleaning: restore plausible thin upright strokes.
+
+    Generic noise removal is retained for borders, blobs and rules. A removed
+    narrow ink component is restored only if it is letter-sized, away from the
+    image border, and close to another surviving component on the same line.
+    No classifier labels are fabricated by this safeguard.
+    """
+    cleaned = remove_noise(binary_img, debug=debug)
+    if np.array_equal(cleaned, binary_img):
+        return cleaned
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary_img, connectivity=8)
+    if n < 4:
+        return cleaned
+    survivors = cv2.connectedComponentsWithStats(cleaned, connectivity=8)[2][1:]
+    if len(survivors) < 2:
+        return cleaned
+    heights = [int(r[cv2.CC_STAT_HEIGHT]) for r in survivors
+               if r[cv2.CC_STAT_HEIGHT] >= 4]
+    if not heights:
+        return cleaned
+    typical_h = float(np.median(heights))
+    H, W = binary_img.shape
+    restored = 0
+    for idx in range(1, n):
+        x, y, w, h, area = map(int, stats[idx])
+        if cleaned[labels == idx].any():
+            continue
+        if x <= 2 or y <= 2 or x+w >= W-2 or y+h >= H-2:
+            continue
+        if not (0.48*typical_h <= h <= 1.85*typical_h):
+            continue
+        if not (2 <= w <= 0.48*h) or area < max(8, int(0.07*h)):
+            continue
+        # Require another retained character at a similar vertical position.
+        cy = y + h/2
+        nearby = any(abs(cy-(int(r[1])+int(r[3])/2)) <= 0.7*typical_h
+                     and max(int(r[0])-x-w, x-int(r[0])-int(r[2]), 0) <= 1.2*typical_h
+                     for r in survivors)
+        if nearby:
+            cleaned[labels == idx] = binary_img[labels == idx]
+            restored += 1
+    if debug and restored:
+        print(f"  [pen debug] restored {restored} plausible thin stroke(s)")
+    return cleaned
+
+
+def pen_keep_narrow_stroke(glyph, median_h):
+    """Protect an upright single-stroke I/l candidate, not horizontal rules."""
+    if glyph.size == 0:
+        return False
+    ys, xs = np.where(glyph > 0)
+    if len(xs) < 8:
+        return False
+    h, w = glyph.shape
+    if h < max(7, 0.45*median_h) or h > 1.9*median_h:
+        return False
+    if w > 0.5*h:
+        return False
+    # An upright stroke may lean but must be predominantly vertical.
+    top = xs[ys < h/3]
+    bottom = xs[ys >= 2*h/3]
+    if len(top) == 0 or len(bottom) == 0:
+        return False
+    return abs(float(np.median(top))-float(np.median(bottom))) <= 0.48*h
+
+
+def pen_preserve_letter_marks(line_bin, boxes, debug=False):
+    """Pen-only shape filtering that does not discard credible I or L strokes."""
+    stroke = _estimate_stroke_thickness(line_bin)
+    median_h = float(np.median([b[3]-b[1] for b in boxes])) if boxes else 1.0
+    kept, dropped = [], 0
+    for b in boxes:
+        glyph = line_bin[b[1]:b[3], b[0]:b[2]]
+        reason = shape_reason(glyph, stroke)
+        protect = pen_is_l_shape(glyph) or (reason == 'line' and
+                  pen_keep_narrow_stroke(glyph, median_h))
+        if reason is None or protect:
+            kept.append(b)
+            if protect and debug:
+                print(f"  [pen debug] preserved narrow letter candidate {b}")
+        else:
+            dropped += 1
+            if debug:
+                print(f"  [pen debug] shape-filtered {b}: {reason}")
+    return kept, dropped
+
+
+def pen_group_words(boxes):
+    """Use a robust letter-gap baseline to avoid splitting wide-spaced capitals.
+
+    A gap must be distinctly larger than ordinary inter-letter gaps; a
+    conservative floor prevents a single unusually wide gap around L from
+    becoming a false word boundary. This is a heuristic, not a dictionary.
+    """
+    if not boxes:
+        return []
+    row = sorted(boxes, key=lambda b: b[0])
+    if len(row) <= 2:
+        return group_latin_words(row)
+    h = max(1.0, float(np.median([b[3] - b[1] for b in row])))
+    gaps = np.array([max(0, row[i][0] - row[i - 1][2])
+                     for i in range(1, len(row))], dtype=float)
+    ordinary = float(np.median(gaps[gaps <= np.percentile(gaps, 60)]))
+    threshold = max(0.48 * h, ordinary * 2.2)
+    # Keep an upper bound so truly separated words remain separate.
+    threshold = min(threshold, 1.05 * h)
+    out, current = [], [row[0]]
+    for i, gap in enumerate(gaps, 1):
+        if gap > threshold:
+            out.append(current)
+            current = []
+        current.append(row[i])
+    out.append(current)
+    return out
+
+
+def pen_deduplicate_boxes(boxes):
+    """Remove near-identical candidate boxes without merging adjacent letters."""
+    result = []
+    for b in sorted(boxes, key=lambda v: (v[0], v[1])):
+        area = max(1, (b[2] - b[0]) * (b[3] - b[1]))
+        duplicate = False
+        for prev in result:
+            inter = max(0, min(b[2], prev[2]) - max(b[0], prev[0])) * max(0, min(b[3], prev[3]) - max(b[1], prev[1]))
+            prev_area = max(1, (prev[2] - prev[0]) * (prev[3] - prev[1]))
+            if inter / float(min(area, prev_area)) > 0.92:
+                duplicate = True
+                break
+        if not duplicate:
+            result.append(b)
+    return result
+
+
+def pen_merge_broken_strokes(line_bin, boxes, debug=False):
+    """Join vertically complementary strokes of ONE pen character.
+
+    This does not join ordinary side-by-side full-height letters. In particular,
+    it keeps adjacent I/l stems independent unless a fragment is vertically
+    complementary and horizontally overlaps its likely owner.
+    """
+    boxes = sorted(set(tuple(map(int, b)) for b in boxes), key=lambda b: (b[0], b[1]))
+    if len(boxes) < 2:
+        return boxes
+    heights = [b[3] - b[1] for b in boxes]
+    typical_h = max(1., float(np.median(heights)))
+    changed = True
+    while changed:
+        changed = False
+        best = None
+        for i, a in enumerate(boxes):
+            for j in range(i + 1, len(boxes)):
+                b = boxes[j]
+                aw, ah = a[2]-a[0], a[3]-a[1]
+                bw, bh = b[2]-b[0], b[3]-b[1]
+                if min(ah, bh) > .55 * typical_h:
+                    continue
+                xoverlap = max(0, min(a[2],b[2])-max(a[0],b[0]))
+                # Horizontal overlap is mandatory: no merging of adjacent letters.
+                if xoverlap < .38 * max(1, min(aw,bw)):
+                    continue
+                vgap = max(0, max(a[1],b[1])-min(a[3],b[3]))
+                if vgap > .18 * typical_h:
+                    continue
+                union = _box_union([a,b])
+                if union[2]-union[0] > 1.25 * typical_h:
+                    continue
+                score = (xoverlap / max(1., min(aw,bw)), -vgap)
+                if best is None or score > best[0]:
+                    best = (score, i, j, union)
+        if best:
+            _, i, j, union = best
+            boxes = [b for k,b in enumerate(boxes) if k not in (i,j)] + [union]
+            boxes.sort(key=lambda b:(b[0],b[1]))
+            changed = True
+            if debug:
+                print(f"  [pen debug] joined complementary ink fragments -> {union}")
+    return boxes
+
+
 def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=None,
                                  word_set=None, debug=False, input_type='pen'):
     latin_model = latin_model or _LATIN_MODEL
@@ -2267,7 +2553,8 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
     # (each one is skipped if it fails - they can never stop a scan)
     binary_all_ink = binary                  # every dark mark, before cleaning
     try:
-        binary = remove_noise(binary, debug=debug)   # specks, ruled lines, edges, blobs
+        binary = (remove_noise(binary, debug=debug) if is_marker
+                  else pen_remove_noise(binary, debug=debug))
     except Exception:
         binary = binary_all_ink
     paper_gray_rot, paper_colour = None, None
@@ -2306,14 +2593,24 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
             continue
         by0, by1 = int(rows.min()), int(rows.max()) + 1
         line_bin = full_mask[by0:by1, :]
+        original_line = binary_all_ink[by0:by1, :] if not is_marker else None
 
         # one box per separate mark; the i-dot is joined to its own stem
         boxes = segment_latin_glyphs(line_bin)
         boxes = merge_stacked_boxes(boxes)              # a broken-off top bar joins its letter
-        boxes = drop_orphan_fragments(boxes)            # drops specks / punctuation
+        if not is_marker:
+            line_bin, boxes = pen_rescue_line_candidates(
+                original_line, line_bin, boxes, debug=debug)
+            # Keep the recovered ink in the full-size mask used for classification.
+            full_mask[by0:by1, :] = line_bin
+
+            boxes = pen_merge_broken_strokes(line_bin, boxes, debug=debug)
+            boxes = pen_deduplicate_boxes(boxes)
+        boxes = (drop_orphan_fragments(boxes) if is_marker else boxes)  # pen: preserve thin strokes
         boxes = drop_too_tall_boxes(boxes)              # drops paper edges / shadows
         # cracks, lines and blobs can never be letters - throw them away
-        boxes, n_noise = drop_non_letter_marks(line_bin, boxes)
+        boxes, n_noise = (drop_non_letter_marks(line_bin, boxes) if is_marker
+                          else pen_preserve_letter_marks(line_bin, boxes, debug=debug))
         letters_total += n_noise
         letters_rejected += n_noise
         # thin strips at the left / right side of the photo are not letters
@@ -2354,8 +2651,9 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
         line_median_h = float(np.median([b[3] - b[1] for b in boxes]))
         # touching letters are split, broken letters are joined
         words_read = [(wb, read_word(full_mask, wb, line_median_h, latin_model,
-                                     latin_classes, word_set))
-                      for wb in group_latin_words(boxes)]
+                                     latin_classes, word_set, pen_mode=not is_marker))
+                      for wb in (group_latin_words(boxes) if is_marker
+                                 else pen_group_words(boxes))]
         if USE_LINE_POSITION:
             try:
                 words_read = apply_line_position(full_mask, words_read, word_set)
@@ -2365,7 +2663,9 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
             cands_per_letter, letter_dets, letter_glyphs = [], [], []
             for (x0, y0, x1, y1), cands in pieces:
                 glyph = full_mask[y0:y1, x0:x1]
-                if cands[0][1] < NOISE_CONFIDENCE_THRESHOLD and status != 'dictionary':
+                if (cands[0][1] < NOISE_CONFIDENCE_THRESHOLD and status != 'dictionary'
+                        and (is_marker or not pen_is_letter_sized_candidate(
+                            glyph, max(1., line_median_h)))):
                     # a mark the model cannot read at all also counts as
                     # "not a known letter" when deciding if the photo is Latin
                     letters_total += 1
@@ -2407,15 +2707,19 @@ def preprocess_and_predict_latin(image_bytes, latin_model=None, latin_classes=No
                 rejected = reject_unknown_letters(
                     letter_glyphs, [c[0][1] for c in cands_per_letter], latin_model)
             if len(latin_word) == len(letter_dets):
-                rejected = [r or wide_thin_letter(g, ch, c[0][1]) for r, g, ch, c
-                            in zip(rejected, letter_glyphs, latin_word, cands_per_letter)]
+                rejected = [(r or wide_thin_letter(g, ch, c[0][1])) and not
+                            (not is_marker and ch.lower() in ('i', 'l') and
+                             c[0][1] >= 0.35 and pen_keep_narrow_stroke(g, max(1, g.shape[0])))
+                            for r, g, ch, c in zip(rejected, letter_glyphs, latin_word, cands_per_letter)]
                 # c / x / z / j written by the user: no Baybayin equivalent,
                 # caught by shape (19-class model only) and removed
                 shapes = [unsupported_shape(g, ch) for g, ch in zip(letter_glyphs, latin_word)]
                 if debug and any(shapes):
                     print(f"  [latin debug] unsupported by shape: "
                           f"{[(ch, sh) for ch, sh in zip(latin_word, shapes) if sh]}")
-                rejected = [r or bool(sh) for r, sh in zip(rejected, shapes)]
+                rejected = [((r or bool(sh)) and not
+                             (not is_marker and pen_is_l_shape(g)))
+                            for r, sh, g in zip(rejected, shapes, letter_glyphs)]
             letters_total += len(letter_dets)
             if any(rejected) and REJECT_MODE == 'drop':
                 # unknown letters are removed: no prediction, no box
